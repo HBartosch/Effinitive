@@ -18,6 +18,7 @@ public class Http2Connection : IAsyncDisposable
     private readonly ConcurrentDictionary<int, Http2Stream> _streams = new();
     private readonly ConcurrentDictionary<int, Http2Stream> _pushedStreams = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly StreamPriorityScheduler _priorityScheduler = new();
     private HpackDecoder _hpackDecoder;
     private readonly HpackEncoder _hpackEncoder = new();
     private readonly Func<HttpRequest, Task<HttpResponse>>? _requestHandler;
@@ -437,10 +438,16 @@ public class Http2Connection : IAsyncDisposable
         }
         
         // Skip priority if present
+        Http2StreamPriority? priority = null;
         if (frame.HasFlag(Http2Constants.FlagPriority))
         {
+            var priorityData = frame.Payload.Slice(payloadOffset, 5);
+            priority = Http2StreamPriority.Parse(priorityData.Span);
             payloadOffset += 5; // Stream dependency (4 bytes) + weight (1 byte)
         }
+        
+        // Register stream with priority scheduler
+        _priorityScheduler.RegisterStream(streamId, priority);
         
         // Decode HPACK headers
         List<(string name, string value)> headers;

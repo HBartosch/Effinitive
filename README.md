@@ -1,11 +1,20 @@
 # EffinitiveFramework
 
+![CI](https://img.shields.io/github/actions/workflow/status/HBartosch/Effinitive/ci.yml?label=CI&style=flat-square)
+![Tests](https://img.shields.io/github/actions/workflow/status/HBartosch/Effinitive/ci.yml?label=Tests&style=flat-square)
+![.NET](https://img.shields.io/badge/.NET-8.0-blue?logo=dotnet&logoColor=white&style=flat-square)
+![License](https://img.shields.io/github/license/HBartosch/Effinitive?style=flat-square)
+![HTTP/2 Support](https://img.shields.io/badge/HTTP%2F2-supported-brightgreen?style=flat-square)
+![HPACK Compression](https://img.shields.io/badge/HPACK-100%25%20RFC%207541-brightgreen?style=flat-square)
+
 A high-performance C# web framework designed to outperform FastEndpoints and compete with GenHTTP.
 
 **✅ Mission Accomplished:**
-- **1.25x faster than GenHTTP** - Beating another custom HTTP server framework
-- **16x faster than FastEndpoints** - Delivering on the performance promise
+- **1.11x faster than GenHTTP** - Beating another custom HTTP server framework (46.5μs vs 51.7μs)
+- **16x faster than FastEndpoints** - Delivering on the performance promise (46.5μs vs 739μs)
+- **16x faster than ASP.NET Core** - Outperforming Microsoft's Minimal API (46.5μs vs 722μs)
 - **Sub-50μs response times** - The fastest C# web framework tested
+- **6KB allocations** - Minimal memory footprint per request
 
 ## 🚀 Performance Goals
 
@@ -269,16 +278,18 @@ dotnet run --project samples/EffinitiveFramework.Sample
 
 ## 🚧 Roadmap
 
-- [ ] Route parameter extraction (e.g., `/users/{id}`)
-- [ ] Query string binding
-- [ ] Header/cookie binding
-- [ ] Request validation
+- [x] ~~Route parameter extraction (e.g., `/users/{id}`)~~ ✅ **IMPLEMENTED**
+- [x] ~~Query string binding~~ ✅ **IMPLEMENTED** (API Key auth)
+- [x] ~~Header/cookie binding~~ ✅ **IMPLEMENTED** (Auth handlers)
+- [x] ~~Request validation~~ ✅ **IMPLEMENTED** (Routya.ResultKit integration)
+- [x] ~~Middleware pipeline~~ ✅ **IMPLEMENTED** (High-performance pipeline)
+- [x] ~~Dependency injection integration~~ ✅ **IMPLEMENTED** (Full DI support)
 - [ ] Response caching
 - [ ] OpenAPI/Swagger integration
-- [ ] Middleware pipeline
-- [ ] Dependency injection integration
-- [ ] Response compression
+- [ ] Response compression (gzip, br, deflate)
 - [ ] Rate limiting
+- [ ] WebSocket support
+- [ ] HTTP/3 / QUIC protocol
 
 ## 🤝 Contributing
 

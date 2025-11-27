@@ -43,8 +43,28 @@ public static class HttpRequestParser
             return false;
         }
 
-        // Check if we need to read body based on Content-Length
-        if (request.ContentLength > 0)
+        // Check if we need to read body based on Content-Length or Transfer-Encoding
+        var transferEncoding = request.Headers.TryGetValue("Transfer-Encoding", out var te) ? te : null;
+        
+        if (transferEncoding?.Equals("chunked", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            // Parse chunked encoding
+            var remainingBuffer = buffer.Slice(reader.Position);
+            if (!ChunkedEncodingParser.TryParseChunked(
+                ref remainingBuffer,
+                out var body,
+                out var chunkConsumed,
+                out var chunkBytesConsumed,
+                maxBodySize))
+            {
+                return false; // Need more data
+            }
+            
+            request.Body = body;
+            request.ContentLength = body.Length;
+            reader.Advance(chunkBytesConsumed);
+        }
+        else if (request.ContentLength > 0)
         {
             // SECURITY: Validate body size to prevent DoS via unbounded allocation
             if (request.ContentLength > maxBodySize)

@@ -120,13 +120,19 @@ public sealed class AuthenticationMiddleware : IMiddleware
                 }
             }
 
-            // Policy-based authorization could be implemented here
-            // For now, we just note that a policy was specified but not enforced
+            // Policy-based authorization
             if (!string.IsNullOrWhiteSpace(requiredPolicy))
             {
-                // TODO: Implement policy-based authorization
-                // For now, just log a warning
-                Console.WriteLine($"Warning: Policy '{requiredPolicy}' specified but policy authorization not yet implemented");
+                // Check if user meets policy requirements
+                if (!await EvaluatePolicyAsync(authResult.Principal, requiredPolicy, request, cancellationToken))
+                {
+                    return new HttpResponse
+                    {
+                        StatusCode = _options.Return403OnFailure ? 403 : 401,
+                        Body = System.Text.Encoding.UTF8.GetBytes($"{{\"error\":\"Policy '{requiredPolicy}' not satisfied\"}}"),
+                        ContentType = "application/json"
+                    };
+                }
             }
         }
         else
@@ -138,5 +144,29 @@ public sealed class AuthenticationMiddleware : IMiddleware
 
         // Call next middleware
         return await next(request, cancellationToken);
+    }
+
+    /// <summary>
+    /// Evaluate if user meets policy requirements
+    /// Default implementation: check for claim with policy name or role
+    /// </summary>
+    private ValueTask<bool> EvaluatePolicyAsync(ClaimsPrincipal principal, string policyName, HttpRequest request, CancellationToken cancellationToken)
+    {
+        // Default policy evaluation: check if user has a claim matching the policy name
+        // Format: "policy:{policyName}" claim with value "true"
+        var policyClaimType = $"policy:{policyName}";
+        var hasPolicyClaim = principal.Claims.Any(c => 
+            c.Type.Equals(policyClaimType, StringComparison.OrdinalIgnoreCase) && 
+            c.Value.Equals("true", StringComparison.OrdinalIgnoreCase));
+
+        if (hasPolicyClaim)
+            return ValueTask.FromResult(true);
+
+        // Alternative: check for role-based policies
+        // Format: policy name = role name
+        if (principal.IsInRole(policyName))
+            return ValueTask.FromResult(true);
+
+        return ValueTask.FromResult(false);
     }
 }

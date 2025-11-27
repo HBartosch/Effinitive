@@ -114,6 +114,6 @@ public class Program
     public static void Main(string[] args)
     {
         // Run HTTP/2 benchmarks directly
-        BenchmarkRunner.Run<Http2Benchmarks>();
+        BenchmarkRunner.Run<FrameworkComparisonBenchmarks>();
     }
 }

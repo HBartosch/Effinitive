@@ -87,15 +87,21 @@ public class HpackEncoder
     
     private void EncodeString(IBufferWriter<byte> buffer, string value, bool huffman)
     {
+        byte[] bytes;
+        byte prefix;
+        
         if (huffman)
         {
-            // TODO: Implement Huffman encoding
-            // For now, use literal encoding
-            huffman = false;
+            // Use Huffman encoding for compression
+            bytes = HuffmanEncoder.Encode(value);
+            prefix = 0x80; // Set Huffman flag
         }
-        
-        var bytes = Encoding.ASCII.GetBytes(value);
-        var prefix = huffman ? (byte)0x80 : (byte)0x00;
+        else
+        {
+            // Use literal encoding
+            bytes = Encoding.ASCII.GetBytes(value);
+            prefix = 0x00;
+        }
         
         EncodeInteger(buffer, bytes.Length, 7, prefix);
         
