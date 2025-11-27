@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\EffinitiveFramework.Core\EffinitiveFramework.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.6" />
+    <PackageReference Include="FastEndpoints" Version="7.1.1" />
+    <PackageReference Include="GenHTTP.Core" Version="9.1.1" />
+    <PackageReference Include="GenHTTP.Modules.Layouting" Version="9.1.1" />
+    <PackageReference Include="GenHTTP.Modules.Webservices" Version="9.1.1" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

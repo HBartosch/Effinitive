@@ -1,0 +1,42 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    
+    <!-- NuGet Package Metadata -->
+    <Title>EffinitiveFramework.Core</Title>
+    <Authors>Henry Bartosch</Authors>
+    <PackageId>EffinitiveFramework.Core</PackageId>
+    <Version>1.0.0</Version>
+    <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
+    <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices</PackageTags>
+    <Description>Ultra-high-performance HTTP/1.1 and HTTP/2 web framework for .NET 8+. Built from scratch for maximum speed with zero-allocation routing, custom HTTP/2 implementation with HPACK compression, and sub-50μs response times. 6-10x faster than ASP.NET Core for API workloads.</Description>
+    <PackageIcon>PackageIconResized.png</PackageIcon>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>v1.0.0: Initial release with HTTP/1.1 and HTTP/2 support, HPACK compression, ALPN negotiation, TLS/HTTPS, type-safe endpoints, and exceptional performance (68μs GET, 110μs POST on HTTP/2).</PackageReleaseNotes>
+    <RepositoryType>git</RepositoryType>
+    <Copyright>Copyright (c) 2025 Henry Bartosch</Copyright>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.ObjectPool" Version="10.0.0" />
+    <PackageReference Include="System.IO.Pipelines" Version="10.0.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.2.1" />
+    <PackageReference Include="Routya.ResultKit" Version="2.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\PackageIconResized.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
