@@ -25,7 +25,7 @@ jobs:
       run: dotnet build src/EffinitiveFramework.Core/EffinitiveFramework.Core.csproj --configuration Release --no-restore
     
     - name: Test
-      run: dotnet test --configuration Release --no-build --verbosity normal
+      run: dotnet test --configuration Release --verbosity normal
 
     - name: Get version from tag
       id: get_version
