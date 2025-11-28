@@ -2,6 +2,8 @@
 
 ![CI](https://img.shields.io/github/actions/workflow/status/HBartosch/Effinitive/ci.yml?label=CI&style=flat-square)
 ![Tests](https://img.shields.io/github/actions/workflow/status/HBartosch/Effinitive/ci.yml?label=Tests&style=flat-square)
+[![NuGet](https://img.shields.io/nuget/v/EffinitiveFramework.Core)](https://www.nuget.org/packages/EffinitiveFramework.Coret)
+[![NuGet](https://img.shields.io/nuget/dt/EffinitiveFramework.Core)](https://www.nuget.org/packages/EffinitiveFramework.Core)
 ![.NET](https://img.shields.io/badge/.NET-8.0-blue?logo=dotnet&logoColor=white&style=flat-square)
 ![License](https://img.shields.io/github/license/HBartosch/Effinitive?style=flat-square)
 ![HTTP/2 Support](https://img.shields.io/badge/HTTP%2F2-supported-brightgreen?style=flat-square)
@@ -153,11 +155,53 @@ public record User
 ```csharp
 using EffinitiveFramework.Core;
 
-var app = EffinitiveApp
-    .Create(args)
-    .MapEndpoints(); // Automatically discovers and registers all endpoints
+var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (s, e) => { e.Cancel = true; cts.Cancel(); };
 
-await app.RunAsync();
+// Create the app, configure ports, TLS, services and endpoints, then build
+var app = EffinitiveApp
+    .Create()
+    .UsePort(5000)           // HTTP on port 5000
+    .UseHttpsPort(5001)      // HTTPS on port 5001 (HTTP/2 enabled via ALPN)
+    .ConfigureTls(tls =>
+    {
+        tls.CertificatePath = "localhost.pfx";
+        tls.CertificatePassword = "dev-password";
+    })
+    .MapEndpoints() // Automatically discovers and registers all endpoints
+    .Build();
+
+// Run the server until cancelled
+await app.RunAsync(cts.Token);
+```
+
+### Dependency Injection (Configure services)
+
+EffinitiveFramework exposes a light-weight DI integration via `ConfigureServices` on the builder. Use it to register DbContexts, services and middleware dependencies.
+
+```csharp
+var app = EffinitiveApp.Create()
+    .ConfigureServices(services =>
+    {
+        // Register a scoped EF Core DbContext
+        services.AddScoped<AppDbContext>(sp =>
+        {
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite("Data Source=products.db")
+                .Options;
+            return new AppDbContext(options);
+        });
+
+        // Register application services
+        services.AddScoped<IProductService, ProductService>();
+        services.AddScoped<IOrderService, OrderService>();
+    })
+    .MapEndpoints(typeof(Program).Assembly)
+    .Build();
+
+// Resolve a scope for initialization or background work
+using var scope = ((EffinitiveFramework.Core.DependencyInjection.ServiceProvider)app.Services!).CreateScope();
+var ctx = scope.ServiceProvider.GetService<AppDbContext>();
 ```
 
 ### 3. Run the Application
