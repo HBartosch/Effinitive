@@ -2,7 +2,7 @@
 
 ![CI](https://img.shields.io/github/actions/workflow/status/HBartosch/Effinitive/ci.yml?label=CI&style=flat-square)
 ![Tests](https://img.shields.io/github/actions/workflow/status/HBartosch/Effinitive/ci.yml?label=Tests&style=flat-square)
-[![NuGet](https://img.shields.io/nuget/v/EffinitiveFramework.Core)](https://www.nuget.org/packages/EffinitiveFramework.Coret)
+[![NuGet](https://img.shields.io/nuget/v/EffinitiveFramework.Core)](https://www.nuget.org/packages/EffinitiveFramework.Core)
 [![NuGet](https://img.shields.io/nuget/dt/EffinitiveFramework.Core)](https://www.nuget.org/packages/EffinitiveFramework.Core)
 ![.NET](https://img.shields.io/badge/.NET-8.0-blue?logo=dotnet&logoColor=white&style=flat-square)
 ![License](https://img.shields.io/github/license/HBartosch/Effinitive?style=flat-square)
