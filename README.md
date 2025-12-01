@@ -30,7 +30,15 @@ A high-performance C# web framework designed to outperform FastEndpoints and com
 
 - **Simple, intuitive API** similar to FastEndpoints
 - **Type-safe endpoints** with generic request/response handling
-- **Dual endpoint types** - Optimized for both sync and async I/O operations
+- **Multiple endpoint types** - Optimized for sync, async I/O, and streaming operations
+  - `EndpointBase<TRequest, TResponse>` - Synchronous/cached operations (ValueTask)
+  - `AsyncEndpointBase<TRequest, TResponse>` - Async I/O operations (Task)
+  - `NoRequestEndpointBase<TResponse>` - Endpoints without request body (GET, health checks)
+  - `NoRequestAsyncEndpointBase<TResponse>` - Async endpoints without request body
+- **Server-Sent Events (SSE)** - Real-time streaming with three endpoint patterns:
+  - `NoRequestSseEndpointBase` - Simple streaming without request body
+  - `SseEndpointBase<TRequest>` - Streaming with request parsing
+  - `SseEndpointBase<TRequest, TEventData>` - Strongly-typed event streaming
 - **Custom HTTP server** with direct socket handling for maximum performance
 - **HTTP/2 support** via ALPN negotiation with binary framing and HPACK compression
 - **HTTP/1.1 protocol** - Battle-tested and optimized for speed
@@ -79,7 +87,30 @@ HTTP/2 is automatically enabled for HTTPS connections when clients negotiate it 
 
 ### 1. Create an Endpoint
 
-**For in-memory/cached operations (use `EndpointBase`):**
+**For simple GET endpoints without request body (use `NoRequestEndpointBase`):**
+
+```csharp
+using EffinitiveFramework.Core;
+
+public class HealthCheckEndpoint : NoRequestEndpointBase<HealthResponse>
+{
+    protected override string Method => "GET";
+    protected override string Route => "/api/health";
+
+    public override ValueTask<HealthResponse> HandleAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return ValueTask.FromResult(new HealthResponse 
+        { 
+            Status = "Healthy",
+            Timestamp = DateTime.UtcNow,
+            Version = "1.1.0"
+        });
+    }
+}
+```
+
+**For in-memory/cached operations with request body (use `EndpointBase`):**
 
 ```csharp
 using EffinitiveFramework.Core;
@@ -128,6 +159,35 @@ public class CreateUserEndpoint : AsyncEndpointBase<CreateUserRequest, UserRespo
         await _dbContext.SaveChangesAsync(cancellationToken);
         
         return new UserResponse { User = user, Success = true };
+    }
+}
+```
+
+**For real-time Server-Sent Events streaming (use SSE endpoints):**
+
+```csharp
+using EffinitiveFramework.Core.Http.ServerSentEvents;
+
+public class ServerTimeEndpoint : NoRequestSseEndpointBase
+{
+    protected override string Method => "GET";
+    protected override string Route => "/api/stream/time";
+
+    protected override async Task HandleStreamAsync(
+        SseStream stream, 
+        CancellationToken cancellationToken)
+    {
+        // Start automatic keep-alive pings
+        _ = stream.StartKeepAliveAsync(TimeSpan.FromSeconds(15), cancellationToken);
+        
+        await stream.WriteAsync("connected", "Server time stream started");
+        
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var timeData = new { Time = DateTime.UtcNow, Zone = "UTC" };
+            await stream.WriteJsonAsync(timeData, cancellationToken);
+            await Task.Delay(1000, cancellationToken);
+        }
     }
 }
 ```
@@ -328,6 +388,7 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - [x] ~~Request validation~~ ✅ **IMPLEMENTED** (Routya.ResultKit integration)
 - [x] ~~Middleware pipeline~~ ✅ **IMPLEMENTED** (High-performance pipeline)
 - [x] ~~Dependency injection integration~~ ✅ **IMPLEMENTED** (Full DI support)
+- [x] ~~Server-Sent Events (SSE)~~ ✅ **IMPLEMENTED v1.1.0** (Real-time streaming)
 - [ ] Response caching
 - [ ] OpenAPI/Swagger integration
 - [ ] Response compression (gzip, br, deflate)

@@ -2,10 +2,70 @@
 
 ## Overview
 
-EffinitiveFramework provides two base classes for implementing endpoints, each optimized for different scenarios:
+EffinitiveFramework provides multiple base classes for implementing endpoints, each optimized for different scenarios:
 
-1. **`EndpointBase<TRequest, TResponse>`** - Uses `ValueTask<T>` 
-2. **`AsyncEndpointBase<TRequest, TResponse>`** - Uses `Task<T>`
+1. **`NoRequestEndpointBase<TResponse>`** - No request body, uses `ValueTask<T>`
+2. **`EndpointBase<TRequest, TResponse>`** - With request body, uses `ValueTask<T>` 
+3. **`NoRequestAsyncEndpointBase<TResponse>`** - No request body, uses `Task<T>` for async I/O
+4. **`AsyncEndpointBase<TRequest, TResponse>`** - With request body, uses `Task<T>` for async I/O
+
+## No Request Endpoint Variants
+
+### Use `NoRequestEndpointBase<TResponse>` (No Request Body, ValueTask)
+
+**Best for synchronous GET endpoints without request body:**
+
+- ✅ Health checks
+- ✅ Status endpoints
+- ✅ Configuration endpoints
+- ✅ In-memory statistics
+- ✅ Simple GET endpoints with no parameters
+
+**Example:**
+```csharp
+public class HealthCheckEndpoint : NoRequestEndpointBase<HealthResponse>
+{
+    protected override string Method => "GET";
+    protected override string Route => "/api/health";
+
+    public override ValueTask<HealthResponse> HandleAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return ValueTask.FromResult(new HealthResponse 
+        { 
+            Status = "Healthy",
+            Timestamp = DateTime.UtcNow,
+            Version = "1.1.0"
+        });
+    }
+}
+```
+
+### Use `NoRequestAsyncEndpointBase<TResponse>` (No Request Body, Task)
+
+**Best for async I/O GET endpoints without request body:**
+
+- ✅ Database queries without input
+- ✅ External API calls without parameters
+- ✅ File reads
+- ✅ Statistics from async sources
+
+**Example:**
+```csharp
+public class DatabaseStatsEndpoint : NoRequestAsyncEndpointBase<StatsResponse>
+{
+    protected override string Method => "GET";
+    protected override string Route => "/api/stats/database";
+
+    public override async Task<StatsResponse> HandleAsync(
+        CancellationToken cancellationToken = default)
+    {
+        // Async database query
+        var stats = await _database.GetStatisticsAsync(cancellationToken);
+        return new StatsResponse { Data = stats };
+    }
+}
+```
 
 ## When to Use Each
 

@@ -148,10 +148,17 @@ public sealed class HttpConnection : IDisposable
         HttpResponse response,
         CancellationToken cancellationToken)
     {
-        if (_writer == null)
+        if (_writer == null || _stream == null)
             return;
 
         await HttpResponseWriter.WriteResponseAsync(_writer, response, cancellationToken);
+        
+        // If this is a streaming response, execute the stream handler
+        if (response.IsStreaming && response.StreamHandler != null)
+        {
+            await response.StreamHandler(_stream, cancellationToken);
+        }
+        
         LastActivity = DateTime.UtcNow;
     }
 

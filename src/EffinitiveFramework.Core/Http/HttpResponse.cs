@@ -1,6 +1,11 @@
 namespace EffinitiveFramework.Core.Http;
 
 /// <summary>
+/// Delegate for streaming response handler
+/// </summary>
+public delegate Task StreamHandler(Stream stream, CancellationToken cancellationToken);
+
+/// <summary>
 /// Represents an HTTP response to be sent
 /// </summary>
 public sealed class HttpResponse
@@ -19,6 +24,17 @@ public sealed class HttpResponse
     /// Response body as byte array
     /// </summary>
     public byte[]? Body { get; set; }
+
+    /// <summary>
+    /// Stream handler for streaming responses (SSE, chunked transfer, etc.)
+    /// If set, Body is ignored and the handler controls the response stream
+    /// </summary>
+    public StreamHandler? StreamHandler { get; set; }
+
+    /// <summary>
+    /// Whether this is a streaming response
+    /// </summary>
+    public bool IsStreaming => StreamHandler != null;
 
     /// <summary>
     /// Content type (defaults to application/json)
@@ -64,6 +80,7 @@ public sealed class HttpResponse
         StatusCode = 200;
         Headers.Clear();
         Body = null;
+        StreamHandler = null;
         KeepAlive = true;
     }
 }

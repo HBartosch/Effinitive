@@ -350,8 +350,20 @@ public sealed class EffinitiveServer : IDisposable
                     }
 
                     var reqType = endpointInterface.GetGenericArguments()[0];
-                    var delegateType = typeof(Func<,,>).MakeGenericType(reqType, typeof(CancellationToken), handleMethod.ReturnType);
-                    handler = Delegate.CreateDelegate(delegateType, endpoint, handleMethod);
+                    
+                    // Get the interface method (explicitly implemented), not the public method
+                    var interfaceMethod = endpointInterface.GetMethod("HandleAsync");
+                    if (interfaceMethod == null)
+                    {
+                        response.StatusCode = 500;
+                        var problemDetails = ProblemDetails.ForStatusCode(500, "Interface method HandleAsync not found");
+                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                        response.ContentType = "application/problem+json";
+                        return response;
+                    }
+                    
+                    var delegateType = typeof(Func<,,>).MakeGenericType(reqType, typeof(CancellationToken), interfaceMethod.ReturnType);
+                    handler = Delegate.CreateDelegate(delegateType, endpoint, interfaceMethod);
                 }
                 else if (route.Handler != null)
                 {
@@ -446,6 +458,14 @@ public sealed class EffinitiveServer : IDisposable
             // Set HttpContext on endpoint instance if it has the property (for accessing request.User, etc.)
             if (endpoint != null)
             {
+                // Store route parameters in request.RouteValues and Items (for backward compatibility)
+                if (route.Parameters != null && route.Parameters.Count > 0)
+                {
+                    request.RouteValues = route.Parameters;
+                    request.Items ??= new Dictionary<string, object>();
+                    request.Items["RouteParameters"] = route.Parameters;
+                }
+                
                 var httpContextProperty = route.EndpointType?.GetProperty("HttpContext");
                 if (httpContextProperty != null && httpContextProperty.CanWrite)
                 {
@@ -530,8 +550,52 @@ public sealed class EffinitiveServer : IDisposable
             if (responseObj != null)
             {
                 response.StatusCode = 200;
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(responseObj, _options.JsonOptions);
-                response.ContentType = "application/json";
+                
+                // Get ContentType from endpoint if available, otherwise default to application/json
+                var contentType = "application/json";
+                if (endpoint != null)
+                {
+                    var contentTypeProperty = route.EndpointType?.GetProperty("ContentType", 
+                        System.Reflection.BindingFlags.Instance | 
+                        System.Reflection.BindingFlags.NonPublic | 
+                        System.Reflection.BindingFlags.Public);
+                    if (contentTypeProperty != null && contentTypeProperty.CanRead)
+                    {
+                        var endpointContentType = contentTypeProperty.GetValue(endpoint) as string;
+                        if (!string.IsNullOrEmpty(endpointContentType))
+                        {
+                            contentType = endpointContentType;
+                        }
+                    }
+                }
+                response.ContentType = contentType;
+                
+                // Handle different response types based on content type
+                if (contentType == "text/plain")
+                {
+                    // For text/plain, serialize string directly without JSON encoding
+                    if (responseObj is string str)
+                    {
+                        response.Body = System.Text.Encoding.UTF8.GetBytes(str);
+                    }
+                    else
+                    {
+                        // Convert to string representation
+                        response.Body = System.Text.Encoding.UTF8.GetBytes(responseObj.ToString() ?? "");
+                    }
+                }
+                else
+                {
+                    // For JSON and other types, use JSON serialization
+                    response.Body = JsonSerializer.SerializeToUtf8Bytes(responseObj, _options.JsonOptions);
+                }
+            }
+            else
+            {
+                // Null response = empty body with 200 OK
+                response.StatusCode = 200;
+                response.Body = Array.Empty<byte>();
+                response.ContentType = "text/plain";
             }
             }
             finally

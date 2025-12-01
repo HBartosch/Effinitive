@@ -56,6 +56,38 @@ public static class HttpResponseWriter
             response.Headers["Content-Type"] = response.ContentType;
         }
 
+        // Handle streaming responses (SSE, chunked transfer, etc.)
+        if (response.IsStreaming && response.StreamHandler != null)
+        {
+            // Don't add Content-Length for streaming responses
+            // Write headers
+            foreach (var (name, value) in response.Headers)
+            {
+                WriteAscii(writer, name);
+                writer.Write(HeaderSeparator);
+                WriteAscii(writer, value);
+                writer.Write(CrLf);
+            }
+
+            // Write Connection header
+            if (response.KeepAlive)
+            {
+                writer.Write(ConnectionKeepAlive);
+            }
+            else
+            {
+                writer.Write(ConnectionClose);
+            }
+
+            // End headers
+            writer.Write(CrLf);
+            await writer.FlushAsync(cancellationToken);
+
+            // Execute stream handler - this will write data directly to the underlying stream
+            // Note: We can't use PipeWriter here as streaming needs direct stream access
+            return;
+        }
+
         // Add Content-Length if body exists
         if (response.Body != null && response.Body.Length > 0)
         {

@@ -58,6 +58,12 @@ public sealed class HttpRequest
     public Dictionary<string, object>? Items { get; set; }
 
     /// <summary>
+    /// Route parameter values extracted from the URL path (e.g., {id}, {name})
+    /// Similar to ASP.NET Core's RouteValues for familiar syntax
+    /// </summary>
+    public Dictionary<string, string>? RouteValues { get; set; }
+
+    /// <summary>
     /// Reset the request for reuse from object pool
     /// </summary>
     public void Reset()
@@ -72,5 +78,6 @@ public sealed class HttpRequest
         IsHttps = false;
         User = null;
         Items?.Clear();
+        RouteValues?.Clear();
     }
 }

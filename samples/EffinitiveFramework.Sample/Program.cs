@@ -10,13 +10,13 @@ Console.CancelKeyPress += (s, e) =>
 var app = EffinitiveFramework.Core.EffinitiveApp
     .Create()
     .UsePort(5000)           // HTTP on port 5000
-    .UseHttpsPort(5001)      // HTTPS on port 5001 (HTTP/2 enabled via ALPN)
-    .ConfigureTls(tls =>
-    {
-        // Use development certificate (creates one if needed)
-        tls.CertificatePath = "localhost.pfx";
-        tls.CertificatePassword = "dev-password";
-    })
+    // .UseHttpsPort(5001)      // HTTPS on port 5001 (HTTP/2 enabled via ALPN) - DISABLED FOR BENCHMARK
+    // .ConfigureTls(tls =>
+    // {
+    //     // Use development certificate (creates one if needed)
+    //     tls.CertificatePath = "localhost.pfx";
+    //     tls.CertificatePassword = "dev-password";
+    // })
     .MapEndpoints()
     .Build();
 
