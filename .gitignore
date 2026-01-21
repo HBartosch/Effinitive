@@ -67,6 +67,11 @@ artifacts/
 BenchmarkDotNet.Artifacts/
 **/BenchmarkDotNet.Artifacts/**
 
+## Sample/Test Projects
+LoadTest/
+GenHttpSample/
+TestHttp2Post/
+
 ## Test Results
 [Tt]est[Rr]esult*/
 [Bb]uild[Ll]og.*

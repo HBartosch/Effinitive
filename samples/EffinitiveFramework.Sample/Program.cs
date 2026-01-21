@@ -1,4 +1,5 @@
-using EffinitiveFramework.Sample.Endpoints;
+// Production-optimized configuration for stress testing and benchmarks
+// This configuration disables debug logging and tunes for maximum throughput
 
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (s, e) =>
@@ -9,24 +10,29 @@ Console.CancelKeyPress += (s, e) =>
 
 var app = EffinitiveFramework.Core.EffinitiveApp
     .Create()
-    .UsePort(5000)           // HTTP on port 5000
-    // .UseHttpsPort(5001)      // HTTPS on port 5001 (HTTP/2 enabled via ALPN) - DISABLED FOR BENCHMARK
-    // .ConfigureTls(tls =>
-    // {
-    //     // Use development certificate (creates one if needed)
-    //     tls.CertificatePath = "localhost.pfx";
-    //     tls.CertificatePassword = "dev-password";
-    // })
+    .UsePort(5000)
+    .Configure(options =>
+    {
+        // Disable debug logging for production performance
+        options.EnableDebugLogging = false;
+        
+        // Increase concurrent connections for stress tests
+        options.MaxConcurrentConnections = Environment.ProcessorCount * 200;
+        
+        // Reduce timeouts for faster failure detection
+        options.HeaderTimeout = TimeSpan.FromSeconds(10);
+        options.RequestTimeout = TimeSpan.FromSeconds(10);
+        options.IdleTimeout = TimeSpan.FromSeconds(60);
+    })
     .MapEndpoints()
     .Build();
 
-Console.WriteLine("🚀 EffinitiveFramework Sample Server");
-Console.WriteLine("=====================================");
-Console.WriteLine($"HTTP/1.1:  http://localhost:5000");
-Console.WriteLine($"HTTP/2:    https://localhost:5001 (ALPN: h2)");
-Console.WriteLine($"Endpoints: /api/users (GET, POST)");
-Console.WriteLine("Press Ctrl+C to stop");
+Console.WriteLine("🚀 EffinitiveFramework - Production Mode");
+Console.WriteLine("========================================");
+Console.WriteLine($"HTTP: http://localhost:5000");
+Console.WriteLine($"Max Connections: {Environment.ProcessorCount * 200}");
+Console.WriteLine($"Debug Logging: Disabled");
+Console.WriteLine($"ThreadPool Min: {Environment.ProcessorCount * 2}");
 Console.WriteLine();
 
 await app.RunAsync(cts.Token);
-

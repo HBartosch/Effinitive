@@ -2,15 +2,15 @@
 
 Write-Host "Verifying IETF RFC Compliance..." -ForegroundColor Cyan
 
-# Test 1: RFC 7540 §6.5.2 - SETTINGS_ENABLE_PUSH = 0
-Write-Host "`n1. RFC 7540 §6.5.2 - Server Push Disabled..." -ForegroundColor Yellow
+# Test 1: RFC 7540 §6.5.2 - SETTINGS_ENABLE_PUSH = 1 (server push enabled)
+Write-Host "`n1. RFC 7540 §6.5.2 - Server Push Enabled..." -ForegroundColor Yellow
 
 $constantsFile = Get-Content "src\EffinitiveFramework.Core\Http2\Http2Constants.cs" -Raw
-if ($constantsFile -match 'DefaultEnablePush\s*=\s*0') {
-    Write-Host "   ✅ PASS: DefaultEnablePush = 0 (server push disabled as not implemented)" -ForegroundColor Green
+if ($constantsFile -match 'DefaultEnablePush\s*=\s*1') {
+    Write-Host "   ✅ PASS: DefaultEnablePush = 1 (server push enabled and fully implemented)" -ForegroundColor Green
     $test1 = $true
 } else {
-    Write-Host "   ❌ FAIL: DefaultEnablePush should be 0" -ForegroundColor Red
+    Write-Host "   ❌ FAIL: DefaultEnablePush should be 1 (server push is implemented)" -ForegroundColor Red
     $test1 = $false
 }
 

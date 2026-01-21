@@ -102,6 +102,11 @@ public sealed class ServerOptions
     /// TLS options for HTTPS
     /// </summary>
     public TlsOptions TlsOptions { get; set; } = new TlsOptions();
+
+    /// <summary>
+    /// Enable debug logging (default: false for production performance)
+    /// </summary>
+    public bool EnableDebugLogging { get; set; } = false;
 }
 
 /// <summary>

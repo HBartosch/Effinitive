@@ -107,6 +107,15 @@ public sealed class EffinitiveAppBuilder
     }
 
     /// <summary>
+    /// Configure server options directly
+    /// </summary>
+    public EffinitiveAppBuilder Configure(Action<ServerOptions> configure)
+    {
+        configure(_serverOptions);
+        return this;
+    }
+
+    /// <summary>
     /// Set idle connection timeout
     /// </summary>
     public EffinitiveAppBuilder UseIdleTimeout(TimeSpan timeout)

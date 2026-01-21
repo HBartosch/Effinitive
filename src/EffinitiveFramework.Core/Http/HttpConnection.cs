@@ -40,7 +40,7 @@ public sealed class HttpConnection : IDisposable
 
         if (isSecure && certificate != null)
         {
-            // Wrap in SSL stream with ALPN for HTTP/2 negotiation
+            // RFC 7301: ALPN for HTTP/2 (h2) negotiation
             var networkStream = new NetworkStream(_socket, ownsSocket: false);
             var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
             
@@ -51,7 +51,7 @@ public sealed class HttpConnection : IDisposable
                 EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
                 ApplicationProtocols = new List<SslApplicationProtocol>
                 {
-                    SslApplicationProtocol.Http2,
+                    SslApplicationProtocol.Http2, // h2
                     SslApplicationProtocol.Http11
                 }
             };

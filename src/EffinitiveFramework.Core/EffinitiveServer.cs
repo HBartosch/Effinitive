@@ -23,6 +23,8 @@ public sealed class EffinitiveServer : IDisposable
     private readonly IServiceProvider? _serviceProvider;
     private readonly MiddlewarePipeline? _middlewarePipeline;
     private readonly CancellationTokenSource _shutdownCts = new();
+    private readonly bool _isProduction;
+    private int _activeConnections;
     
     private Socket? _httpListener;
     private Socket? _httpsListener;
@@ -46,6 +48,12 @@ public sealed class EffinitiveServer : IDisposable
         _connectionPool = new DefaultObjectPool<HttpConnection>(
             new HttpConnectionPoolPolicy(),
             maximumRetained: _options.MaxConcurrentConnections);
+        _isProduction = !options.EnableDebugLogging;
+        
+        // Configure ThreadPool for high-concurrency scenarios
+        ThreadPool.GetMinThreads(out var minWorkerThreads, out var minIOThreads);
+        var optimalThreads = Math.Max(Environment.ProcessorCount * 2, minWorkerThreads);
+        ThreadPool.SetMinThreads(optimalThreads, minIOThreads);
     }
 
     /// <summary>
@@ -98,8 +106,14 @@ public sealed class EffinitiveServer : IDisposable
     private static Socket CreateListener(int port)
     {
         var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        
+        // Performance optimizations for high-concurrency
+        listener.NoDelay = true; // Disable Nagle's algorithm
+        listener.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        listener.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, false);
+        
         listener.Bind(new IPEndPoint(IPAddress.Any, port));
-        listener.Listen(512);
+        listener.Listen(8192); // Increased backlog for stress tests
         return listener;
     }
 
@@ -109,28 +123,44 @@ public sealed class EffinitiveServer : IDisposable
         {
             try
             {
-                // Wait for connection slot
-                await _connectionLimit.WaitAsync(cancellationToken);
+                // Check connection limit using atomic counter instead of semaphore wait
+                var currentConnections = Interlocked.CompareExchange(ref _activeConnections, 0, 0);
+                if (currentConnections >= _options.MaxConcurrentConnections)
+                {
+                    await Task.Delay(10, cancellationToken); // Brief backoff
+                    continue;
+                }
 
                 // Accept connection
                 var socket = await listener.AcceptAsync(cancellationToken);
-                Console.WriteLine($"Accepted connection from {socket.RemoteEndPoint}");
+                
+                // Apply socket optimizations
+                socket.NoDelay = true;
+                socket.SendBufferSize = 8192;
+                socket.ReceiveBufferSize = 8192;
+                
+                if (!_isProduction)
+                    Console.WriteLine($"Accepted connection from {socket.RemoteEndPoint}");
 
-                // Handle connection in background
-                _ = Task.Run(() => HandleConnectionAsync(socket, isSecure, cancellationToken), cancellationToken);
+                // Increment counter and handle directly (no Task.Run overhead)
+                Interlocked.Increment(ref _activeConnections);
+                _ = HandleConnectionAsync(socket, isSecure, cancellationToken);
             }
             catch (OperationCanceledException)
             {
-                Console.WriteLine("Accept loop cancelled");
+                if (!_isProduction)
+                    Console.WriteLine("Accept loop cancelled");
                 break;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Accept error: {ex.Message}");
+                if (!_isProduction)
+                    Console.WriteLine($"Accept error: {ex.Message}");
                 // Log error and continue
             }
         }
-        Console.WriteLine($"Accept loop exited - secure: {isSecure}");
+        if (!_isProduction)
+            Console.WriteLine($"Accept loop exited - secure: {isSecure}");
     }
 
     private async Task HandleConnectionAsync(Socket socket, bool isSecure, CancellationToken cancellationToken)
@@ -152,7 +182,8 @@ public sealed class EffinitiveServer : IDisposable
             // Check if HTTP/2 was negotiated
             if (connection.NegotiatedProtocol == "h2")
             {
-                Console.WriteLine("HTTP/2 connection detected via ALPN");
+                if (!_isProduction)
+                    Console.WriteLine("HTTP/2 connection detected via ALPN");
                 await HandleHttp2ConnectionAsync(connection, cancellationToken);
                 return;
             }
@@ -212,7 +243,7 @@ public sealed class EffinitiveServer : IDisposable
         {
             _connectionPool.Return(connection);
             _metrics.DecrementConnections();
-            _connectionLimit.Release();
+            Interlocked.Decrement(ref _activeConnections);
         }
     }
 
@@ -259,7 +290,8 @@ public sealed class EffinitiveServer : IDisposable
                 return;
             }
 
-            Console.WriteLine($"[Server] No middleware - executing endpoint directly");
+            if (!_isProduction)
+                Console.WriteLine($"[Server] No middleware - executing endpoint directly");
             // No middleware - execute endpoint directly
             var directResponse = await ExecuteEndpointAsync(request, routeValue, cancellationToken);
             response.StatusCode = directResponse.StatusCode;
@@ -308,6 +340,8 @@ public sealed class EffinitiveServer : IDisposable
             {
                 object? endpoint = null;
                 Delegate? handler = null;
+                Type? requestType = null;
+                System.Reflection.MethodInfo? handleMethod = null;
                 
                 // Check if we have an endpoint type (new DI-based routing) or handler (legacy)
                 if (route.EndpointType != null)
@@ -323,12 +357,14 @@ public sealed class EffinitiveServer : IDisposable
                         return response;
                     }
 
-                    // Get the HandleAsync method
-                    var handleMethod = route.EndpointType.GetMethod("HandleAsync");
+                    // Get the public HandleAsync method
+                    handleMethod = route.EndpointType.GetMethod("HandleAsync", 
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    
                     if (handleMethod == null)
                     {
                         response.StatusCode = 500;
-                        var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not have HandleAsync method");
+                        var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not have public HandleAsync method");
                         response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
                         response.ContentType = "application/problem+json";
                         return response;
@@ -349,26 +385,25 @@ public sealed class EffinitiveServer : IDisposable
                         return response;
                     }
 
-                    var reqType = endpointInterface.GetGenericArguments()[0];
-                    
-                    // Get the interface method (explicitly implemented), not the public method
-                    var interfaceMethod = endpointInterface.GetMethod("HandleAsync");
-                    if (interfaceMethod == null)
-                    {
-                        response.StatusCode = 500;
-                        var problemDetails = ProblemDetails.ForStatusCode(500, "Interface method HandleAsync not found");
-                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                        response.ContentType = "application/problem+json";
-                        return response;
-                    }
-                    
-                    var delegateType = typeof(Func<,,>).MakeGenericType(reqType, typeof(CancellationToken), interfaceMethod.ReturnType);
-                    handler = Delegate.CreateDelegate(delegateType, endpoint, interfaceMethod);
+                    requestType = endpointInterface.GetGenericArguments()[0];
                 }
                 else if (route.Handler != null)
                 {
                     // Legacy handler-based routing
                     handler = route.Handler;
+                    var handlerType = handler.GetType();
+                    var genericArgs = handlerType.GetGenericArguments();
+                    
+                    if (genericArgs.Length < 3)
+                    {
+                        response.StatusCode = 500;
+                        var problemDetails = ProblemDetails.ForStatusCode(500, "Handler does not have correct generic arguments");
+                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                        response.ContentType = "application/problem+json";
+                        return response;
+                    }
+
+                    requestType = genericArgs[0];
                 }
                 else
                 {
@@ -379,13 +414,14 @@ public sealed class EffinitiveServer : IDisposable
                     return response;
                 }
 
-                var handlerType = handler.GetType();
-                var genericArgs = handlerType.GetGenericArguments();
-                
-                if (genericArgs.Length < 3) return response;
-
-            var requestType = genericArgs[0];
-            var returnType = genericArgs[2];
+                if (requestType == null)
+                {
+                    response.StatusCode = 500;
+                    var problemDetails = ProblemDetails.ForStatusCode(500, "Could not determine request type");
+                    response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                    response.ContentType = "application/problem+json";
+                    return response;
+                }
 
             // Deserialize request body
             object? requestObj = null;
@@ -512,7 +548,46 @@ public sealed class EffinitiveServer : IDisposable
             }
 
             // Invoke handler
-            var result = handler.DynamicInvoke(requestObj, cancellationToken);
+            object? result = null;
+            
+            if (handleMethod != null && endpoint != null)
+            {
+                // Use direct method invocation for endpoints
+                var parameters = handleMethod.GetParameters();
+                
+                // Check parameter count - NoRequest endpoints have only CancellationToken parameter
+                if (parameters.Length == 1 && parameters[0].ParameterType == typeof(CancellationToken))
+                {
+                    // NoRequest endpoint - only pass CancellationToken
+                    result = handleMethod.Invoke(endpoint, new object[] { cancellationToken });
+                }
+                else if (parameters.Length == 2)
+                {
+                    // Regular endpoint - pass request object and CancellationToken
+                    result = handleMethod.Invoke(endpoint, new[] { requestObj, cancellationToken });
+                }
+                else
+                {
+                    response.StatusCode = 500;
+                    var problemDetails = ProblemDetails.ForStatusCode(500, $"Unexpected parameter count: {parameters.Length}");
+                    response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                    response.ContentType = "application/problem+json";
+                    return response;
+                }
+            }
+            else if (handler != null)
+            {
+                // Use dynamic invocation for legacy handlers
+                result = handler.DynamicInvoke(requestObj, cancellationToken);
+            }
+            else
+            {
+                response.StatusCode = 500;
+                var problemDetails = ProblemDetails.ForStatusCode(500, "No handler or method to invoke");
+                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                response.ContentType = "application/problem+json";
+                return response;
+            }
 
             // Handle ValueTask<T> or Task<T>
             object? responseObj = null;
@@ -606,13 +681,16 @@ public sealed class EffinitiveServer : IDisposable
         }
         catch (Exception ex)
         {
-            // Log exception details to console
-            Console.WriteLine($"❌ EXCEPTION: {ex.GetType().Name}");
-            Console.WriteLine($"   Message: {ex.Message}");
-            Console.WriteLine($"   StackTrace: {ex.StackTrace}");
-            if (ex.InnerException != null)
+            // Log exception details only in debug mode
+            if (!_isProduction)
             {
-                Console.WriteLine($"   InnerException: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                Console.WriteLine($"❌ EXCEPTION: {ex.GetType().Name}");
+                Console.WriteLine($"   Message: {ex.Message}");
+                Console.WriteLine($"   StackTrace: {ex.StackTrace}");
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"   InnerException: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                }
             }
             
             response.StatusCode = 500;
@@ -664,7 +742,8 @@ public sealed class EffinitiveServer : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"HTTP/2 connection error: {ex.Message}");
+            if (!_isProduction)
+                Console.WriteLine($"HTTP/2 connection error: {ex.Message}");
         }
         finally
         {

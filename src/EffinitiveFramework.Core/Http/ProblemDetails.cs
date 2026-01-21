@@ -5,6 +5,7 @@ namespace EffinitiveFramework.Core.Http;
 
 /// <summary>
 /// RFC 7807 Problem Details for HTTP APIs
+/// Content-Type: application/problem+json
 /// </summary>
 public sealed class ProblemDetails
 {
