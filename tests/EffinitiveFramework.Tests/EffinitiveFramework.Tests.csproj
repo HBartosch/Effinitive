@@ -21,7 +21,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.Text.RegularExpressions" Version="4.3.1" />
     <ProjectReference Include="..\..\src\EffinitiveFramework.Core\EffinitiveFramework.Core.csproj" />
   </ItemGroup>
 
