@@ -88,8 +88,14 @@ public class Http2Benchmarks
     
     private Core.EffinitiveApp StartEffinitiveHttpsServerAsync(CancellationToken cancellationToken)
     {
-        // Use absolute path since BenchmarkDotNet changes working directory
-        var certPath = @"c:\Projects\EffinitiveFrameowrk\samples\EffinitiveFramework.Sample\localhost.pfx";
+        // Walk up from AppContext.BaseDirectory to find the solution root, then locate the cert.
+        // BenchmarkDotNet runs from a temp artifact directory, so we can't use a fixed relative path.
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "EffinitiveFramework.sln")))
+            dir = dir.Parent;
+        if (dir == null)
+            throw new InvalidOperationException("Could not locate solution root from " + AppContext.BaseDirectory);
+        var certPath = Path.Combine(dir.FullName, "samples", "EffinitiveFramework.Sample", "localhost.pfx");
         
         var app = Core.EffinitiveApp
             .Create()
@@ -287,22 +293,40 @@ public class Http2BenchmarkEndpointPost : EffinitiveFramework.Core.AsyncEndpoint
     }
 }
 
-// ==================== FastEndpoints Endpoint ====================
+// ==================== FastEndpoints Endpoints ====================
 
-public class FastEndpointsHttp2Endpoint : Endpoint<Http2BenchmarkRequest, Http2BenchmarkResponse>
+public class FastEndpointsHttp2GetEndpoint : Endpoint<Http2BenchmarkRequest, Http2BenchmarkResponse>
 {
     public override void Configure()
     {
         Get("/api/http2-benchmark");
-        Post("/api/http2-benchmark");
         AllowAnonymous();
     }
-    
+
     public override async Task HandleAsync(Http2BenchmarkRequest req, CancellationToken ct)
     {
         var response = new Http2BenchmarkResponse
         {
-            Message = $"HTTP/2 FastEndpoints: {req.Name ?? "GET"}",
+            Message = $"HTTP/2 FastEndpoints GET: {req.Name ?? "GET"}",
+            Timestamp = DateTime.UtcNow
+        };
+        await HttpContext.Response.WriteAsJsonAsync(response, ct);
+    }
+}
+
+public class FastEndpointsHttp2PostEndpoint : Endpoint<Http2BenchmarkRequest, Http2BenchmarkResponse>
+{
+    public override void Configure()
+    {
+        Post("/api/http2-benchmark");
+        AllowAnonymous();
+    }
+
+    public override async Task HandleAsync(Http2BenchmarkRequest req, CancellationToken ct)
+    {
+        var response = new Http2BenchmarkResponse
+        {
+            Message = $"HTTP/2 FastEndpoints POST: {req.Name ?? "POST"}",
             Timestamp = DateTime.UtcNow
         };
         await HttpContext.Response.WriteAsJsonAsync(response, ct);
