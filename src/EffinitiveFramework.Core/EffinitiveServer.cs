@@ -31,6 +31,13 @@ public sealed class EffinitiveServer : IDisposable
     private Task? _httpAcceptTask;
     private Task? _httpsAcceptTask;
 
+    // Reusable argument arrays for MethodInfo.Invoke in the slow path.
+    // [ThreadStatic] is safe here: Invoke is synchronous and does not retain the array
+    // across the subsequent await, so each thread's slot is always free before the next call.
+    [ThreadStatic] private static object[]? _slowPathArgs1;
+    [ThreadStatic] private static object[]? _slowPathArgs2;
+    [ThreadStatic] private static object[]? _slowPathValidArgs;
+
     public ServerMetrics Metrics => _metrics;
 
     public EffinitiveServer(
@@ -338,340 +345,355 @@ public sealed class EffinitiveServer : IDisposable
 
             try
             {
-                object? endpoint = null;
-                Delegate? handler = null;
-                Type? requestType = null;
-                System.Reflection.MethodInfo? handleMethod = null;
-                
-                // Check if we have an endpoint type (new DI-based routing) or handler (legacy)
-                if (route.EndpointType != null)
+                // ---------------------------------------------------------------
+                // Fast path: compiled EndpointInvoker (zero reflection on hot path)
+                // ---------------------------------------------------------------
+                if (route.Invoker != null && route.EndpointType != null)
                 {
+                    var invoker = route.Invoker;
+
                     // Resolve endpoint from scoped DI container
-                    endpoint = scopedProvider.GetService(route.EndpointType);
+                    var endpoint = scopedProvider.GetService(route.EndpointType);
                     if (endpoint == null)
                     {
                         response.StatusCode = 500;
-                        var problemDetails = ProblemDetails.ForStatusCode(500, $"Failed to resolve endpoint {route.EndpointType.Name}");
-                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                        var pd = ProblemDetails.ForStatusCode(500, $"Failed to resolve endpoint {route.EndpointType.Name}");
+                        response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
                         response.ContentType = "application/problem+json";
                         return response;
                     }
 
-                    // Get the public HandleAsync method
-                    handleMethod = route.EndpointType.GetMethod("HandleAsync", 
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                    
-                    if (handleMethod == null)
+                    // Store route parameters for middleware/endpoint access
+                    if (route.Parameters != null && route.Parameters.Count > 0)
                     {
-                        response.StatusCode = 500;
-                        var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not have public HandleAsync method");
-                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                        response.ContentType = "application/problem+json";
-                        return response;
+                        request.RouteValues = route.Parameters;
+                        request.Items ??= new Dictionary<string, object>();
+                        request.Items["RouteParameters"] = route.Parameters;
                     }
 
-                    // Get endpoint interface to find request/response types
-                    var endpointInterface = route.EndpointType.GetInterfaces()
-                        .FirstOrDefault(i => i.IsGenericType &&
-                            (i.GetGenericTypeDefinition() == typeof(IEndpoint<,>) ||
-                             i.GetGenericTypeDefinition() == typeof(IAsyncEndpoint<,>)));
+                    // Set HttpContext — compiled delegate, no reflection
+                    invoker.SetHttpContext(endpoint, request);
 
-                    if (endpointInterface == null)
-                    {
-                        response.StatusCode = 500;
-                        var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not implement IEndpoint<,> or IAsyncEndpoint<,>");
-                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                        response.ContentType = "application/problem+json";
-                        return response;
-                    }
-
-                    requestType = endpointInterface.GetGenericArguments()[0];
-                }
-                else if (route.Handler != null)
-                {
-                    // Legacy handler-based routing
-                    handler = route.Handler;
-                    var handlerType = handler.GetType();
-                    var genericArgs = handlerType.GetGenericArguments();
-                    
-                    if (genericArgs.Length < 3)
-                    {
-                        response.StatusCode = 500;
-                        var problemDetails = ProblemDetails.ForStatusCode(500, "Handler does not have correct generic arguments");
-                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                        response.ContentType = "application/problem+json";
-                        return response;
-                    }
-
-                    requestType = genericArgs[0];
-                }
-                else
-                {
-                    response.StatusCode = 500;
-                    var problemDetails = ProblemDetails.ForStatusCode(500, "No handler or endpoint type configured for route");
-                    response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                    response.ContentType = "application/problem+json";
-                    return response;
-                }
-
-                if (requestType == null)
-                {
-                    response.StatusCode = 500;
-                    var problemDetails = ProblemDetails.ForStatusCode(500, "Could not determine request type");
-                    response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                    response.ContentType = "application/problem+json";
-                    return response;
-                }
-
-            // Deserialize request body
-            object? requestObj = null;
-            if (request.ContentLength > 0 && request.Body.Length > 0)
-            {
-                try
-                {
-                    requestObj = JsonSerializer.Deserialize(request.Body, requestType, _options.JsonOptions);
-                }
-                catch (Exception ex)
-                {
-                    response.StatusCode = 400;
-                    var problemDetails = ProblemDetails.FromException(ex);
-                    problemDetails.Title = "Bad Request";
-                    problemDetails.Status = 400;
-                    response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                    response.ContentType = "application/problem+json";
-                    return response;
-                }
-            }
-            else
-            {
-                requestObj = Activator.CreateInstance(requestType);
-            }
-
-            // Populate route parameters if any
-            if (route.Parameters != null && requestObj != null)
-            {
-                foreach (var param in route.Parameters)
-                {
-                    var property = requestType.GetProperty(param.Key, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
-                    if (property != null && property.CanWrite)
+                    // Deserialize request body
+                    object? requestObj = null;
+                    if (request.ContentLength > 0 && request.Body.Length > 0)
                     {
                         try
                         {
-                            // Try to convert the parameter value to the property type
-                            object? convertedValue = null;
-                            if (property.PropertyType == typeof(string))
-                            {
-                                convertedValue = param.Value;
-                            }
-                            else if (property.PropertyType == typeof(int))
-                            {
-                                convertedValue = int.Parse(param.Value);
-                            }
-                            else if (property.PropertyType == typeof(long))
-                            {
-                                convertedValue = long.Parse(param.Value);
-                            }
-                            else if (property.PropertyType == typeof(Guid))
-                            {
-                                convertedValue = Guid.Parse(param.Value);
-                            }
-                            else
-                            {
-                                // Try general conversion
-                                convertedValue = Convert.ChangeType(param.Value, property.PropertyType);
-                            }
-
-                            property.SetValue(requestObj, convertedValue);
+                            requestObj = JsonSerializer.Deserialize(request.Body, invoker.RequestType, _options.JsonOptions);
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // Ignore conversion errors - property stays at default value
+                            response.StatusCode = 400;
+                            var pd = ProblemDetails.FromException(ex);
+                            pd.Title = "Bad Request";
+                            pd.Status = 400;
+                            response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
+                            response.ContentType = "application/problem+json";
+                            return response;
                         }
-                    }
-                }
-            }
-
-            // Set HttpContext on endpoint instance if it has the property (for accessing request.User, etc.)
-            if (endpoint != null)
-            {
-                // Store route parameters in request.RouteValues and Items (for backward compatibility)
-                if (route.Parameters != null && route.Parameters.Count > 0)
-                {
-                    request.RouteValues = route.Parameters;
-                    request.Items ??= new Dictionary<string, object>();
-                    request.Items["RouteParameters"] = route.Parameters;
-                }
-                
-                var httpContextProperty = route.EndpointType?.GetProperty("HttpContext");
-                if (httpContextProperty != null && httpContextProperty.CanWrite)
-                {
-                    httpContextProperty.SetValue(endpoint, request);
-                }
-            }
-
-            // Validate request if ValidationEnabled flag is set on the request
-            if (request.Items != null && request.Items.TryGetValue("ValidationEnabled", out var validationEnabledObj) && validationEnabledObj is true)
-            {
-                if (requestObj != null)
-                {
-                    // Use reflection to call .Validate() extension method from Routya.ResultKit
-                    var validateMethod = typeof(Routya.ResultKit.ValidationExtensions).GetMethod("Validate");
-                    if (validateMethod != null)
-                    {
-                        var genericMethod = validateMethod.MakeGenericMethod(requestType);
-                        var validationResult = genericMethod.Invoke(null, new[] { requestObj });
-                        
-                        // Check if validation failed
-                        var successProperty = validationResult?.GetType().GetProperty("Success");
-                        var success = (bool)(successProperty?.GetValue(validationResult) ?? true);
-                        
-                        if (!success)
-                        {
-                            // Get the Error property (ProblemDetails)
-                            var errorProperty = validationResult?.GetType().GetProperty("Error");
-                            var problemDetails = errorProperty?.GetValue(validationResult) as Routya.ResultKit.ProblemDetails;
-                            
-                            if (problemDetails != null)
-                            {
-                                // Return validation error response
-                                response.StatusCode = problemDetails.Status ?? 400;
-                                response.ContentType = "application/problem+json";
-                                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, new JsonSerializerOptions
-                                {
-                                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                                });
-                                return response;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Invoke handler
-            object? result = null;
-            
-            if (handleMethod != null && endpoint != null)
-            {
-                // Use direct method invocation for endpoints
-                var parameters = handleMethod.GetParameters();
-                
-                // Check parameter count - NoRequest endpoints have only CancellationToken parameter
-                if (parameters.Length == 1 && parameters[0].ParameterType == typeof(CancellationToken))
-                {
-                    // NoRequest endpoint - only pass CancellationToken
-                    result = handleMethod.Invoke(endpoint, new object[] { cancellationToken });
-                }
-                else if (parameters.Length == 2)
-                {
-                    // Regular endpoint - pass request object and CancellationToken
-                    result = handleMethod.Invoke(endpoint, new[] { requestObj, cancellationToken });
-                }
-                else
-                {
-                    response.StatusCode = 500;
-                    var problemDetails = ProblemDetails.ForStatusCode(500, $"Unexpected parameter count: {parameters.Length}");
-                    response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                    response.ContentType = "application/problem+json";
-                    return response;
-                }
-            }
-            else if (handler != null)
-            {
-                // Use dynamic invocation for legacy handlers
-                result = handler.DynamicInvoke(requestObj, cancellationToken);
-            }
-            else
-            {
-                response.StatusCode = 500;
-                var problemDetails = ProblemDetails.ForStatusCode(500, "No handler or method to invoke");
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                response.ContentType = "application/problem+json";
-                return response;
-            }
-
-            // Handle ValueTask<T> or Task<T>
-            object? responseObj = null;
-            if (result != null)
-            {
-                var resultType = result.GetType();
-                
-                // Check if it's a Task (includes Task<T> and derived types)
-                if (result is Task task)
-                {
-                    await task;
-                    
-                    // Get the Result property for Task<T>
-                    var resultProperty = resultType.GetProperty("Result");
-                    if (resultProperty != null)
-                    {
-                        responseObj = resultProperty.GetValue(task);
-                    }
-                }
-                else if (resultType.IsGenericType && resultType.GetGenericTypeDefinition() == typeof(ValueTask<>))
-                {
-                    // Convert ValueTask<T> to Task<T> and await
-                    var asTaskMethod = resultType.GetMethod("AsTask");
-                    var vTask = asTaskMethod?.Invoke(result, null) as Task;
-                    if (vTask != null)
-                    {
-                        await vTask;
-                        var resultProperty = vTask.GetType().GetProperty("Result");
-                        responseObj = resultProperty?.GetValue(vTask);
-                    }
-                }
-            }
-
-            // Serialize response
-            if (responseObj != null)
-            {
-                response.StatusCode = 200;
-                
-                // Get ContentType from endpoint if available, otherwise default to application/json
-                var contentType = "application/json";
-                if (endpoint != null)
-                {
-                    var contentTypeProperty = route.EndpointType?.GetProperty("ContentType", 
-                        System.Reflection.BindingFlags.Instance | 
-                        System.Reflection.BindingFlags.NonPublic | 
-                        System.Reflection.BindingFlags.Public);
-                    if (contentTypeProperty != null && contentTypeProperty.CanRead)
-                    {
-                        var endpointContentType = contentTypeProperty.GetValue(endpoint) as string;
-                        if (!string.IsNullOrEmpty(endpointContentType))
-                        {
-                            contentType = endpointContentType;
-                        }
-                    }
-                }
-                response.ContentType = contentType;
-                
-                // Handle different response types based on content type
-                if (contentType == "text/plain")
-                {
-                    // For text/plain, serialize string directly without JSON encoding
-                    if (responseObj is string str)
-                    {
-                        response.Body = System.Text.Encoding.UTF8.GetBytes(str);
                     }
                     else
                     {
-                        // Convert to string representation
-                        response.Body = System.Text.Encoding.UTF8.GetBytes(responseObj.ToString() ?? "");
+                        requestObj = Activator.CreateInstance(invoker.RequestType);
                     }
+
+                    // Bind route parameters — compiled setters, no PropertyInfo.SetValue/boxing
+                    if (route.Parameters != null && requestObj != null)
+                    {
+                        foreach (var param in route.Parameters)
+                        {
+                            if (invoker.RouteParamSetters.TryGetValue(param.Key, out var setter))
+                            {
+                                try
+                                {
+                                    setter.Setter(requestObj, ConvertRouteParam(param.Value, setter.Property.PropertyType));
+                                }
+                                catch
+                                {
+                                    // Ignore conversion errors — property stays at default value
+                                }
+                            }
+                        }
+                    }
+
+                    // Invoke handler — compiled delegate, no MethodInfo.Invoke/boxing
+                    var responseObj = await invoker.InvokeAsync(endpoint, requestObj, cancellationToken);
+
+                    // ContentType — compiled getter, no GetProperty/GetValue
+                    var contentType = invoker.GetContentType(endpoint) ?? "application/json";
+
+                    SerializeResponse(response, responseObj, contentType);
+                    return response;
                 }
-                else
+
+                // ---------------------------------------------------------------
+                // Slow path: endpoint type without compiled invoker, or legacy handler
+                // ---------------------------------------------------------------
                 {
-                    // For JSON and other types, use JSON serialization
-                    response.Body = JsonSerializer.SerializeToUtf8Bytes(responseObj, _options.JsonOptions);
+                    object? endpoint = null;
+                    Delegate? handler = null;
+                    Type? requestType = null;
+                    System.Reflection.MethodInfo? handleMethod = null;
+
+                    if (route.EndpointType != null)
+                    {
+                        // Resolve endpoint from scoped DI container
+                        endpoint = scopedProvider.GetService(route.EndpointType);
+                        if (endpoint == null)
+                        {
+                            response.StatusCode = 500;
+                            var problemDetails = ProblemDetails.ForStatusCode(500, $"Failed to resolve endpoint {route.EndpointType.Name}");
+                            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                            response.ContentType = "application/problem+json";
+                            return response;
+                        }
+
+                        handleMethod = route.EndpointType.GetMethod("HandleAsync",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+
+                        if (handleMethod == null)
+                        {
+                            response.StatusCode = 500;
+                            var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not have public HandleAsync method");
+                            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                            response.ContentType = "application/problem+json";
+                            return response;
+                        }
+
+                        var endpointInterface = route.EndpointType.GetInterfaces()
+                            .FirstOrDefault(i => i.IsGenericType &&
+                                (i.GetGenericTypeDefinition() == typeof(IEndpoint<,>) ||
+                                 i.GetGenericTypeDefinition() == typeof(IAsyncEndpoint<,>)));
+
+                        if (endpointInterface == null)
+                        {
+                            response.StatusCode = 500;
+                            var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not implement IEndpoint<,> or IAsyncEndpoint<,>");
+                            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                            response.ContentType = "application/problem+json";
+                            return response;
+                        }
+
+                        requestType = endpointInterface.GetGenericArguments()[0];
+                    }
+                    else if (route.Handler != null)
+                    {
+                        handler = route.Handler;
+                        var handlerType = handler.GetType();
+                        var genericArgs = handlerType.GetGenericArguments();
+
+                        if (genericArgs.Length < 3)
+                        {
+                            response.StatusCode = 500;
+                            var problemDetails = ProblemDetails.ForStatusCode(500, "Handler does not have correct generic arguments");
+                            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                            response.ContentType = "application/problem+json";
+                            return response;
+                        }
+
+                        requestType = genericArgs[0];
+                    }
+                    else
+                    {
+                        response.StatusCode = 500;
+                        var problemDetails = ProblemDetails.ForStatusCode(500, "No handler or endpoint type configured for route");
+                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                        response.ContentType = "application/problem+json";
+                        return response;
+                    }
+
+                    if (requestType == null)
+                    {
+                        response.StatusCode = 500;
+                        var problemDetails = ProblemDetails.ForStatusCode(500, "Could not determine request type");
+                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                        response.ContentType = "application/problem+json";
+                        return response;
+                    }
+
+                    // Deserialize request body
+                    object? requestObj = null;
+                    if (request.ContentLength > 0 && request.Body.Length > 0)
+                    {
+                        try
+                        {
+                            requestObj = JsonSerializer.Deserialize(request.Body, requestType, _options.JsonOptions);
+                        }
+                        catch (Exception ex)
+                        {
+                            response.StatusCode = 400;
+                            var problemDetails = ProblemDetails.FromException(ex);
+                            problemDetails.Title = "Bad Request";
+                            problemDetails.Status = 400;
+                            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                            response.ContentType = "application/problem+json";
+                            return response;
+                        }
+                    }
+                    else
+                    {
+                        requestObj = Activator.CreateInstance(requestType);
+                    }
+
+                    // Populate route parameters if any
+                    if (route.Parameters != null && requestObj != null)
+                    {
+                        foreach (var param in route.Parameters)
+                        {
+                            var property = requestType.GetProperty(param.Key, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+                            if (property != null && property.CanWrite)
+                            {
+                                try
+                                {
+                                    property.SetValue(requestObj, ConvertRouteParam(param.Value, property.PropertyType));
+                                }
+                                catch
+                                {
+                                    // Ignore conversion errors - property stays at default value
+                                }
+                            }
+                        }
+                    }
+
+                    // Set HttpContext on endpoint instance if it has the property
+                    if (endpoint != null)
+                    {
+                        if (route.Parameters != null && route.Parameters.Count > 0)
+                        {
+                            request.RouteValues = route.Parameters;
+                            request.Items ??= new Dictionary<string, object>();
+                            request.Items["RouteParameters"] = route.Parameters;
+                        }
+
+                        var httpContextProperty = route.EndpointType?.GetProperty("HttpContext");
+                        if (httpContextProperty != null && httpContextProperty.CanWrite)
+                        {
+                            httpContextProperty.SetValue(endpoint, request);
+                        }
+                    }
+
+                    // Validate request if ValidationEnabled flag is set on the request
+                    if (request.Items != null && request.Items.TryGetValue("ValidationEnabled", out var validationEnabledObj) && validationEnabledObj is true)
+                    {
+                        if (requestObj != null)
+                        {
+                            var validateMethod = typeof(Routya.ResultKit.ValidationExtensions).GetMethod("Validate");
+                            if (validateMethod != null)
+                            {
+                                var genericMethod = validateMethod.MakeGenericMethod(requestType);
+                                var vArgs = _slowPathValidArgs ??= new object[1];
+                                vArgs[0] = requestObj;
+                                var validationResult = genericMethod.Invoke(null, vArgs);
+
+                                var successProperty = validationResult?.GetType().GetProperty("Success");
+                                var success = (bool)(successProperty?.GetValue(validationResult) ?? true);
+
+                                if (!success)
+                                {
+                                    var errorProperty = validationResult?.GetType().GetProperty("Error");
+                                    var problemDetails = errorProperty?.GetValue(validationResult) as Routya.ResultKit.ProblemDetails;
+
+                                    if (problemDetails != null)
+                                    {
+                                        response.StatusCode = problemDetails.Status ?? 400;
+                                        response.ContentType = "application/problem+json";
+                                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, new JsonSerializerOptions
+                                        {
+                                            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                                        });
+                                        return response;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Invoke handler
+                    object? result = null;
+
+                    if (handleMethod != null && endpoint != null)
+                    {
+                        var parameters = handleMethod.GetParameters();
+
+                        if (parameters.Length == 1 && parameters[0].ParameterType == typeof(CancellationToken))
+                        {
+                            var a1 = _slowPathArgs1 ??= new object[1];
+                            a1[0] = cancellationToken;
+                            result = handleMethod.Invoke(endpoint, a1);
+                        }
+                        else if (parameters.Length == 2)
+                        {
+                            var a2 = _slowPathArgs2 ??= new object[2];
+                            a2[0] = requestObj;
+                            a2[1] = cancellationToken;
+                            result = handleMethod.Invoke(endpoint, a2);
+                        }
+                        else
+                        {
+                            response.StatusCode = 500;
+                            var problemDetails = ProblemDetails.ForStatusCode(500, $"Unexpected parameter count: {parameters.Length}");
+                            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                            response.ContentType = "application/problem+json";
+                            return response;
+                        }
+                    }
+                    else if (handler != null)
+                    {
+                        result = handler.DynamicInvoke(requestObj, cancellationToken);
+                    }
+                    else
+                    {
+                        response.StatusCode = 500;
+                        var problemDetails = ProblemDetails.ForStatusCode(500, "No handler or method to invoke");
+                        response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
+                        response.ContentType = "application/problem+json";
+                        return response;
+                    }
+
+                    // Handle ValueTask<T> or Task<T>
+                    object? responseObj = null;
+                    if (result != null)
+                    {
+                        var resultType = result.GetType();
+
+                        if (result is Task task)
+                        {
+                            await task;
+                            var resultProperty = resultType.GetProperty("Result");
+                            if (resultProperty != null)
+                                responseObj = resultProperty.GetValue(task);
+                        }
+                        else if (resultType.IsGenericType && resultType.GetGenericTypeDefinition() == typeof(ValueTask<>))
+                        {
+                            var asTaskMethod = resultType.GetMethod("AsTask");
+                            var vTask = asTaskMethod?.Invoke(result, null) as Task;
+                            if (vTask != null)
+                            {
+                                await vTask;
+                                var resultProperty = vTask.GetType().GetProperty("Result");
+                                responseObj = resultProperty?.GetValue(vTask);
+                            }
+                        }
+                    }
+
+                    // Serialize response
+                    var contentType = "application/json";
+                    if (endpoint != null)
+                    {
+                        var contentTypeProperty = route.EndpointType?.GetProperty("ContentType",
+                            System.Reflection.BindingFlags.Instance |
+                            System.Reflection.BindingFlags.NonPublic |
+                            System.Reflection.BindingFlags.Public);
+                        if (contentTypeProperty != null && contentTypeProperty.CanRead)
+                        {
+                            var endpointContentType = contentTypeProperty.GetValue(endpoint) as string;
+                            if (!string.IsNullOrEmpty(endpointContentType))
+                                contentType = endpointContentType;
+                        }
+                    }
+                    SerializeResponse(response, responseObj, contentType);
                 }
-            }
-            else
-            {
-                // Null response = empty body with 200 OK
-                response.StatusCode = 200;
-                response.Body = Array.Empty<byte>();
-                response.ContentType = "text/plain";
-            }
             }
             finally
             {
@@ -700,6 +722,41 @@ public sealed class EffinitiveServer : IDisposable
         }
 
         return response;
+    }
+
+    private static object? ConvertRouteParam(string value, Type targetType)
+    {
+        if (targetType == typeof(string)) return value;
+        if (targetType == typeof(int))   return int.Parse(value);
+        if (targetType == typeof(long))  return long.Parse(value);
+        if (targetType == typeof(Guid))  return Guid.Parse(value);
+        return Convert.ChangeType(value, targetType);
+    }
+
+    private void SerializeResponse(HttpResponse response, object? responseObj, string contentType)
+    {
+        if (responseObj != null)
+        {
+            response.StatusCode = 200;
+            response.ContentType = contentType;
+
+            if (contentType == "text/plain")
+            {
+                response.Body = responseObj is string str
+                    ? System.Text.Encoding.UTF8.GetBytes(str)
+                    : System.Text.Encoding.UTF8.GetBytes(responseObj.ToString() ?? "");
+            }
+            else
+            {
+                response.Body = JsonSerializer.SerializeToUtf8Bytes(responseObj, _options.JsonOptions);
+            }
+        }
+        else
+        {
+            response.StatusCode = 200;
+            response.Body = Array.Empty<byte>();
+            response.ContentType = "text/plain";
+        }
     }
 
     private async Task HandleErrorAsync(Exception exception, HttpRequest request, HttpResponse response)
