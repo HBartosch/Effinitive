@@ -161,10 +161,17 @@ public sealed class EndpointInvoker
             return static (_, _) => { };
         }
 
+        var setMethod = httpContextProp.GetSetMethod(nonPublic: true);
+        if (setMethod is null)
+        {
+            // Setter is inaccessible — return no-op
+            return static (_, _) => { };
+        }
+
         var endpointParam = Expression.Parameter(typeof(object), "endpoint");
         var requestParam  = Expression.Parameter(typeof(HttpRequest), "request");
         var typedEndpoint = Expression.Convert(endpointParam, endpointType);
-        var setProp = Expression.Call(typedEndpoint, httpContextProp.GetSetMethod(nonPublic: true)!, requestParam);
+        var setProp = Expression.Call(typedEndpoint, setMethod, requestParam);
         return Expression.Lambda<Action<object, HttpRequest>>(setProp, endpointParam, requestParam).Compile();
     }
 
@@ -184,7 +191,7 @@ public sealed class EndpointInvoker
         // prop.PropertyType should be string; convert just in case
         Expression body = prop.PropertyType == typeof(string)
             ? getProp
-            : Expression.Call(getProp, nameof(object.ToString), Type.EmptyTypes);
+            : Expression.Call(getProp, typeof(object).GetMethod(nameof(object.ToString), Type.EmptyTypes)!);
         return Expression.Lambda<Func<object, string>>(body, endpointParam).Compile();
     }
 
@@ -196,11 +203,14 @@ public sealed class EndpointInvoker
         {
             if (!prop.CanWrite) continue;
 
+            var setMethod = prop.GetSetMethod(nonPublic: true);
+            if (setMethod is null) continue;
+
             var targetParam = Expression.Parameter(typeof(object), "target");
             var valueParam  = Expression.Parameter(typeof(object), "value");
             var typedTarget = Expression.Convert(targetParam, requestType);
             var typedValue  = Expression.Convert(valueParam, prop.PropertyType);
-            var setProp     = Expression.Call(typedTarget, prop.GetSetMethod()!, typedValue);
+            var setProp     = Expression.Call(typedTarget, setMethod, typedValue);
             var setter      = Expression.Lambda<Action<object, object?>>(setProp, targetParam, valueParam).Compile();
 
             dict[prop.Name] = new RouteParamSetter(prop, setter);

@@ -726,11 +726,30 @@ public sealed class EffinitiveServer : IDisposable
 
     private static object? ConvertRouteParam(string value, Type targetType)
     {
-        if (targetType == typeof(string)) return value;
-        if (targetType == typeof(int))   return int.Parse(value);
-        if (targetType == typeof(long))  return long.Parse(value);
-        if (targetType == typeof(Guid))  return Guid.Parse(value);
-        return Convert.ChangeType(value, targetType);
+        // Handle nullable value types by converting using the underlying type
+        var nonNullableType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        var isNullable = nonNullableType != targetType;
+
+        try
+        {
+            if (nonNullableType == typeof(string)) return value;
+            if (nonNullableType == typeof(int))    return int.Parse(value);
+            if (nonNullableType == typeof(long))   return long.Parse(value);
+            if (nonNullableType == typeof(Guid))   return Guid.Parse(value);
+
+            return Convert.ChangeType(value, nonNullableType);
+        }
+        catch
+        {
+            if (isNullable)
+            {
+                // For nullable targets, treat conversion failures as null values
+                return null;
+            }
+
+            // Preserve existing behavior for non-nullable types
+            throw;
+        }
     }
 
     private void SerializeResponse(HttpResponse response, object? responseObj, string contentType)

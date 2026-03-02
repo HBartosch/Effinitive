@@ -98,10 +98,18 @@ public sealed class Router
         path.CopyTo(keyBuffer[(method.Length + 1)..]);
 
         // FrozenDictionary uses a computed perfect hash — faster lookup than Dictionary.
-        // GetAlternateLookup avoids the string allocation entirely (.NET 9+).
+        // On .NET 9+, GetAlternateLookup avoids the string allocation entirely by using a span-based lookup.
+        // Minimum .NET version requirement: NET9_0_OR_GREATER for span-based lookup; NET8 falls back to string key.
+#if NET9_0_OR_GREATER
         var lookup = _frozenRoutes!.GetAlternateLookup<ReadOnlySpan<char>>();
         if (lookup.TryGetValue(keyBuffer, out var node))
             return new RouteMatch(node.Handler, null, node.EndpointType, node.Invoker);
+#else
+        // Fallback for .NET 8: allocate a string key for lookup.
+        var key = new string(keyBuffer);
+        if (_frozenRoutes!.TryGetValue(key, out var node))
+            return new RouteMatch(node.Handler, null, node.EndpointType, node.Invoker);
+#endif
 
         // Slow path: parameterised routes
         return FindParametricRoute(method, path);
@@ -171,6 +179,8 @@ public sealed class Router
             remaining = slash < 0 ? default : remaining[(slash + 1)..].TrimStart('/');
         }
 
+        // Return an empty dictionary (not null) when the route matches but has no parameters,
+        // to distinguish "matched with no params" from "no match" (null), which is returned above.
         return parameters ?? new Dictionary<string, string>();
     }
 
