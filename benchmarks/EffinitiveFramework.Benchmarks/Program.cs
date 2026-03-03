@@ -1,41 +1,45 @@
-﻿using BenchmarkDotNet.Attributes;
+﻿using System.Linq.Expressions;
+using System.Reflection;
+using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 
 namespace EffinitiveFramework.Benchmarks;
 
 [MemoryDiagnoser]
-[SimpleJob(warmupCount: 3, iterationCount: 5)]
+[SimpleJob(warmupCount: 3, iterationCount: 10)]
 public class RoutingBenchmarks
 {
     private EffinitiveFramework.Core.Router? _router;
-    private const string TestRoute = "/api/users";
-    private const string TestMethod = "GET";
+    private const string ExactMethod  = "GET";
+    private const string ExactPath    = "/api/users";
+    private const string ParamPath    = "/api/users/42";
+    private const string ParamPattern = "/api/users/{id}";
 
     [GlobalSetup]
     public void Setup()
     {
         _router = new EffinitiveFramework.Core.Router();
-        
-        // Register sample routes
-        _router.AddRoute("GET", "/api/users", (int id) => Task.FromResult($"User {id}"));
-        _router.AddRoute("POST", "/api/users", (string name) => Task.FromResult($"Created {name}"));
-        _router.AddRoute("GET", "/api/products", (int id) => Task.FromResult($"Product {id}"));
-        _router.AddRoute("DELETE", "/api/products", (int id) => Task.FromResult($"Deleted {id}"));
+
+        // Register exact-match and parameterised routes
+        _router.AddRoute("GET",    "/api/users",     (int id)   => Task.FromResult($"User {id}"));
+        _router.AddRoute("POST",   "/api/users",     (string n) => Task.FromResult($"Created {n}"));
+        _router.AddRoute("GET",    ParamPattern,     (int id)   => Task.FromResult($"User {id}"));
+        _router.AddRoute("GET",    "/api/products",  (int id)   => Task.FromResult($"Product {id}"));
+        _router.AddRoute("DELETE", "/api/products",  (int id)   => Task.FromResult($"Deleted {id}"));
+
+        // Required after all AddRoute calls — materialises FrozenDictionary
+        _router.Freeze();
     }
 
-    [Benchmark]
-    public void RouteMatching()
-    {
-        _router!.FindRoute(TestMethod.AsSpan(), TestRoute.AsSpan());
-    }
+    /// <summary>Exact-match via FrozenDictionary AlternateLookup — zero string allocation.</summary>
+    [Benchmark(Baseline = true, Description = "Exact match (FrozenDictionary, no alloc)")]
+    public EffinitiveFramework.Core.RouteMatch? ExactMatch()
+        => _router!.FindRoute(ExactMethod.AsSpan(), ExactPath.AsSpan());
 
-    [Benchmark]
-    public void RouteMatchingWithAllocation()
-    {
-        var method = "GET";
-        var route = "/api/users";
-        _router!.FindRoute(method.AsSpan(), route.AsSpan());
-    }
+    /// <summary>Parameterised match via pre-split span scan — no Split('/') allocation.</summary>
+    [Benchmark(Description = "Param match (span scan, pre-split segments)")]
+    public EffinitiveFramework.Core.RouteMatch? ParamMatch()
+        => _router!.FindRoute(ExactMethod.AsSpan(), ParamPath.AsSpan());
 }
 
 [MemoryDiagnoser]
@@ -109,11 +113,73 @@ public class EndpointBenchmarks
     }
 }
 
+/// <summary>
+/// Isolates the reflection-vs-compiled-delegate hot path in EndpointInvoker.
+/// Run with: dotnet run -c Release -- --filter *EndpointInvocation*
+/// </summary>
+[MemoryDiagnoser]
+[SimpleJob(warmupCount: 3, iterationCount: 10)]
+public class EndpointInvocationBenchmarks
+{
+    // Reflection path — MethodInfo.Invoke (simulates current/old behavior)
+    private MethodInfo _handleMethod = null!;
+    private EndpointBenchmarks.TestSyncEndpoint _syncEndpoint = null!;
+    private EndpointBenchmarks.TestRequest _request = null!;
+
+    // Compiled-delegate path — EndpointInvoker (new behavior)
+    private Func<object, object?, CancellationToken, Task<object?>> _compiled = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _syncEndpoint = new EndpointBenchmarks.TestSyncEndpoint();
+        _request = new EndpointBenchmarks.TestRequest { Id = 1, Name = "BenchmarkTest" };
+
+        // Pre-look up the MethodInfo once (matches what the old server did per-request)
+        _handleMethod = typeof(EndpointBenchmarks.TestSyncEndpoint)
+            .GetMethod("HandleAsync", BindingFlags.Public | BindingFlags.Instance)!;
+
+        // Build compiled delegate the same way EndpointInvoker.Build() does it
+        var invoker = EffinitiveFramework.Core.EndpointInvoker.Build(typeof(EndpointBenchmarks.TestSyncEndpoint));
+        _compiled = invoker.InvokeAsync;
+    }
+
+    /// <summary>Baseline: MethodInfo.Invoke — boxes args, boxes return, no JIT inlining.</summary>
+    [Benchmark(Baseline = true, Description = "MethodInfo.Invoke (old path)")]
+    public async Task<object?> ReflectionInvoke()
+    {
+        // Mirrors the old ExecuteEndpointAsync: Invoke → box ValueTask<T> → AsTask → Result
+        var result = _handleMethod.Invoke(_syncEndpoint, new object[] { _request, CancellationToken.None });
+        var resultType = result!.GetType();
+        var asTaskMethod = resultType.GetMethod("AsTask")!;
+        var vTask = (Task)asTaskMethod.Invoke(result, null)!;
+        await vTask;
+        var resultProp = vTask.GetType().GetProperty("Result")!;
+        return resultProp.GetValue(vTask);
+    }
+
+    /// <summary>New path: compiled Expression.Lambda delegate — direct call, no boxing.</summary>
+    [Benchmark(Description = "Compiled delegate (new path)")]
+    public Task<object?> CompiledInvoke()
+        => _compiled(_syncEndpoint, _request, CancellationToken.None);
+}
+
 public class Program
 {
     public static void Main(string[] args)
     {
-        // Run HTTP/2 benchmarks directly
-        BenchmarkRunner.Run<Http2Benchmarks>();
+        // Use BenchmarkSwitcher so you can run any benchmark class from the CLI:
+        //   dotnet run -c Release                         → picks Http2Benchmarks (default)
+        //   dotnet run -c Release -- --filter *Invocation*  → runs EndpointInvocationBenchmarks
+        //   dotnet run -c Release -- --filter *Routing*     → runs RoutingBenchmarks
+        if (args.Length == 0)
+        {
+            // Default: run the HTTP/2 end-to-end benchmarks
+            BenchmarkRunner.Run<Http2Benchmarks>();
+        }
+        else
+        {
+            BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
+        }
     }
 }

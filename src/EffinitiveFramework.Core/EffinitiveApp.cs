@@ -182,6 +182,10 @@ public sealed class EffinitiveAppBuilder
             RegisterEndpoints(_endpointsAssembly, serviceProvider);
         }
 
+        // Freeze router: materialises FrozenDictionary and pre-splits parameterised routes.
+        // Must be called after all AddRoute / AddEndpointType calls.
+        _router.Freeze();
+
         return new EffinitiveApp(_serverOptions, _router, serviceProvider, middlewarePipeline);
     }
 
@@ -244,8 +248,13 @@ public sealed class EffinitiveAppBuilder
                 continue;
             }
 
+            // Build compiled invoker once at startup — eliminates all per-request reflection.
+            // If Build() throws, the exception propagates out of EffinitiveAppBuilder.Build(),
+            // failing fast at startup so broken endpoints are caught before serving traffic.
+            var invoker = EndpointInvoker.Build(type);
+
             // Register endpoint type as metadata - will be resolved per-request with DI
-            _router.AddEndpointType(method, route, type);
+            _router.AddEndpointType(method, route, type, invoker);
             Console.WriteLine($"✅ Registered: {method.ToUpper().PadRight(6)} {route.PadRight(25)} -> {type.Name}");
         }
     }
