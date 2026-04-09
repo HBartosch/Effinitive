@@ -19,6 +19,26 @@ public class HomeEndpoint : NoRequestEndpointBase<string>
 }
 
 /// <summary>
+/// POST / - Echo the request body (used by HTTP compliance probes)
+/// </summary>
+public class HomePostEndpoint : NoRequestEndpointBase<string>
+{
+    protected override string Method => "POST";
+    protected override string Route => "/";
+    protected override string ContentType => "text/plain";
+
+    public override ValueTask<string> HandleAsync(CancellationToken cancellationToken = default)
+    {
+        var body = HttpContext?.Body;
+        if (body != null && body.Length > 0)
+        {
+            return ValueTask.FromResult(System.Text.Encoding.UTF8.GetString(body));
+        }
+        return ValueTask.FromResult(string.Empty);
+    }
+}
+
+/// <summary>
 /// FastEndpoints-style implementation: GET /user/{id} returns the id
 /// </summary>
 public class UserByIdEndpoint : NoRequestEndpointBase<string>

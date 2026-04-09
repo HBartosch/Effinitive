@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>1.1.0</Version>
+    <Version>1.3.0</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,12 +19,16 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v1.1.0: Added Server-Sent Events (SSE) streaming support with three endpoint patterns (NoRequestSseEndpointBase, SseEndpointBase&lt;TRequest&gt;, SseEndpointBase&lt;TRequest, TEventData&gt;). Added NoRequest endpoint variants (NoRequestEndpointBase, NoRequestAsyncEndpointBase) for cleaner GET endpoint APIs. Added ContentType property customization for all endpoint types. Includes keep-alive support, JSON serialization, TypedSseStream&lt;T&gt; for compile-time type safety, and comprehensive documentation.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.3.0: Full RFC 9110/9112 compliance — 215/215 Http11Probe score (161 scored + 54 unscored, 0 FAIL, 0 WARN). Added pre-routing request validation (HTTP version gating, Host header enforcement, smuggling vector rejection, Range DoS protection). Added ETag generation and conditional request support (If-None-Match, If-Modified-Since, 304 Not Modified). Added lazy-parsed HttpRequest.Cookies property. Added chunked trailer field validation. Refactored EffinitiveServer into partial classes for maintainability. Added 80 new unit tests (142 total). InternalsVisibleTo for test project.</PackageReleaseNotes>
     <RepositoryType>git</RepositoryType>
     <Copyright>Copyright (c) 2025 Henry Bartosch</Copyright>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EffinitiveFramework.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="9.0.0" Condition="'$(TargetFramework)' == 'net8.0'">

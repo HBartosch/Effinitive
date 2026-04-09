@@ -63,6 +63,61 @@ public sealed class HttpRequest
     /// </summary>
     public Dictionary<string, string>? RouteValues { get; set; }
 
+    private Dictionary<string, string>? _cookies;
+
+    /// <summary>
+    /// Parsed cookies from the Cookie header. Lazily parsed on first access.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Cookies
+    {
+        get
+        {
+            if (_cookies == null)
+            {
+                _cookies = new Dictionary<string, string>(StringComparer.Ordinal);
+                if (Headers.TryGetValue("Cookie", out var cookieHeader))
+                {
+                    ParseCookies(cookieHeader, _cookies);
+                }
+            }
+            return _cookies;
+        }
+    }
+
+    private static void ParseCookies(string header, Dictionary<string, string> cookies)
+    {
+        // Cookie header: "name=value; name2=value2" or "a=1, b=2" (merged duplicates)
+        var span = header.AsSpan();
+        while (span.Length > 0)
+        {
+            // Find next separator (; or ,)
+            int sep = -1;
+            for (int i = 0; i < span.Length; i++)
+            {
+                if (span[i] == ';' || span[i] == ',')
+                {
+                    sep = i;
+                    break;
+                }
+            }
+
+            var pair = sep >= 0 ? span[..sep] : span;
+            span = sep >= 0 ? span[(sep + 1)..] : ReadOnlySpan<char>.Empty;
+
+            pair = pair.Trim();
+            if (pair.IsEmpty) continue;
+
+            var eq = pair.IndexOf('=');
+            if (eq > 0)
+            {
+                var name = pair[..eq].Trim();
+                var value = pair[(eq + 1)..];
+                if (name.Length > 0)
+                    cookies[name.ToString()] = value.ToString();
+            }
+        }
+    }
+
     /// <summary>
     /// Reset the request for reuse from object pool
     /// </summary>
@@ -79,5 +134,6 @@ public sealed class HttpRequest
         User = null;
         Items?.Clear();
         RouteValues?.Clear();
+        _cookies = null;
     }
 }

@@ -91,11 +91,15 @@ public sealed class Router
         if (_frozenRoutes == null)
             ThrowNotFrozen();
 
+        // Strip query string before lookup
+        var qsIndex = path.IndexOf('?');
+        var pathOnly = qsIndex >= 0 ? path[..qsIndex] : path;
+
         // Fast path: exact match — build composite key on the stack, zero heap allocation
-        Span<char> keyBuffer = stackalloc char[method.Length + path.Length + 1];
+        Span<char> keyBuffer = stackalloc char[method.Length + pathOnly.Length + 1];
         method.CopyTo(keyBuffer);
         keyBuffer[method.Length] = ':';
-        path.CopyTo(keyBuffer[(method.Length + 1)..]);
+        pathOnly.CopyTo(keyBuffer[(method.Length + 1)..]);
 
         // FrozenDictionary uses a computed perfect hash — faster lookup than Dictionary.
         // On .NET 9+, GetAlternateLookup avoids the string allocation entirely by using a span-based lookup.
@@ -112,7 +116,71 @@ public sealed class Router
 #endif
 
         // Slow path: parameterised routes
-        return FindParametricRoute(method, path);
+        return FindParametricRoute(method, pathOnly);
+    }
+
+    /// <summary>
+    /// Check if a path has routes registered for any HTTP method.
+    /// Returns the list of methods if found, null otherwise.
+    /// Used for 405 Method Not Allowed with Allow header.
+    /// </summary>
+    public List<string>? GetAllowedMethods(ReadOnlySpan<char> path)
+    {
+        if (_frozenRoutes == null) return null;
+
+        var qsIndex = path.IndexOf('?');
+        var pathOnly = qsIndex >= 0 ? path[..qsIndex] : path;
+
+        List<string>? methods = null;
+        string[] methodList = ["GET", "POST", "PUT", "DELETE", "PATCH"];
+
+        // Max method length (DELETE=6) + 1 (colon) + path
+        Span<char> keyBuf = stackalloc char[7 + pathOnly.Length];
+
+        for (int i = 0; i < methodList.Length; i++)
+        {
+            var m = methodList[i].AsSpan();
+            var keySlice = keyBuf[..(m.Length + pathOnly.Length + 1)];
+            m.CopyTo(keySlice);
+            keySlice[m.Length] = ':';
+            pathOnly.CopyTo(keySlice[(m.Length + 1)..]);
+
+#if NET9_0_OR_GREATER
+            var lookup = _frozenRoutes.GetAlternateLookup<ReadOnlySpan<char>>();
+            if (lookup.TryGetValue(keySlice, out _))
+            {
+                methods ??= new List<string>(4);
+                methods.Add(methodList[i]);
+            }
+#else
+            if (_frozenRoutes.TryGetValue(new string(keySlice), out _))
+            {
+                methods ??= new List<string>(4);
+                methods.Add(methodList[i]);
+            }
+#endif
+        }
+
+        // Also check parametric routes
+        if (_paramRoutes != null)
+        {
+            foreach (var m in methodList)
+            {
+                if (methods != null && methods.Contains(m)) continue;
+                if (!_paramRoutes.TryGetValue(m, out var candidates)) continue;
+                foreach (var route in candidates)
+                {
+                    if (MatchSegments(pathOnly, route.Segments) != null)
+                    {
+                        methods ??= new List<string>(4);
+                        methods.Add(m);
+                        break;
+                    }
+                }
+            }
+        }
+
+        return methods;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
