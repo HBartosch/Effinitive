@@ -26,8 +26,12 @@ public static class HttpResponseWriter
         [403] = "HTTP/1.1 403 Forbidden\r\n"u8.ToArray(),
         [404] = "HTTP/1.1 404 Not Found\r\n"u8.ToArray(),
         [405] = "HTTP/1.1 405 Method Not Allowed\r\n"u8.ToArray(),
+        [414] = "HTTP/1.1 414 URI Too Long\r\n"u8.ToArray(),
+        [431] = "HTTP/1.1 431 Request Header Fields Too Large\r\n"u8.ToArray(),
         [500] = "HTTP/1.1 500 Internal Server Error\r\n"u8.ToArray(),
+        [501] = "HTTP/1.1 501 Not Implemented\r\n"u8.ToArray(),
         [503] = "HTTP/1.1 503 Service Unavailable\r\n"u8.ToArray(),
+        [505] = "HTTP/1.1 505 HTTP Version Not Supported\r\n"u8.ToArray(),
     };
 
     /// <summary>
@@ -48,6 +52,18 @@ public static class HttpResponseWriter
             writer.Write(Http11);
             WriteAscii(writer, response.StatusCode.ToString());
             writer.Write(CrLf);
+        }
+
+        // Add Date header if not present (RFC 9110 §6.6.1)
+        if (!response.Headers.ContainsKey("Date"))
+        {
+            response.Headers["Date"] = DateTime.UtcNow.ToString("R");
+        }
+
+        // Add Server header if not present
+        if (!response.Headers.ContainsKey("Server"))
+        {
+            response.Headers["Server"] = "effinitive";
         }
 
         // Ensure Content-Type header exists
@@ -88,8 +104,13 @@ public static class HttpResponseWriter
             return;
         }
 
-        // Add Content-Length if body exists
-        if (response.Body != null && response.Body.Length > 0)
+        // Add Content-Length if body exists (but not for 204 No Content)
+        if (response.StatusCode == 204)
+        {
+            // RFC 9110 §6.3.5: A server MUST NOT send Content-Length in a 204 response
+            response.Headers.Remove("Content-Length");
+        }
+        else if (response.Body != null && response.Body.Length > 0)
         {
             response.Headers["Content-Length"] = response.Body.Length.ToString();
         }

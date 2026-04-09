@@ -14,12 +14,17 @@ public sealed class TlsOptions
     public X509Certificate2? Certificate { get; set; }
 
     /// <summary>
-    /// Path to certificate file (PFX)
+    /// Path to certificate file (PFX or PEM)
     /// </summary>
     public string? CertificatePath { get; set; }
 
     /// <summary>
-    /// Certificate password
+    /// Path to private key file (PEM) — used when CertificatePath is a PEM cert
+    /// </summary>
+    public string? KeyPath { get; set; }
+
+    /// <summary>
+    /// Certificate password (for PFX files)
     /// </summary>
     public string? CertificatePassword { get; set; }
 
@@ -30,7 +35,16 @@ public sealed class TlsOptions
     {
         if (Certificate == null && !string.IsNullOrEmpty(CertificatePath))
         {
-            Certificate = new X509Certificate2(CertificatePath, CertificatePassword);
+            if (!string.IsNullOrEmpty(KeyPath))
+            {
+                // PEM cert + key files
+                Certificate = X509Certificate2.CreateFromPemFile(CertificatePath, KeyPath);
+            }
+            else
+            {
+                // PFX file
+                Certificate = new X509Certificate2(CertificatePath, CertificatePassword);
+            }
         }
     }
 }
