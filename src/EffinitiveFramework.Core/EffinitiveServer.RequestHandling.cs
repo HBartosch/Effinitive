@@ -67,19 +67,9 @@ public sealed partial class EffinitiveServer
 
         if (route == null)
         {
-            // Check if the method is known
-            bool isKnownMethod = request.Method is "GET" or "POST" or "PUT" or "DELETE" or
-                "PATCH" or "HEAD" or "OPTIONS" or "TRACE" or "CONNECT";
-            if (!isKnownMethod)
-            {
-                response.StatusCode = 501;
-                response.Body = System.Text.Encoding.UTF8.GetBytes($"Method {request.Method} not implemented");
-                response.ContentType = "text/plain";
-                response.KeepAlive = false;
-                return;
-            }
-
             // Check if the path exists for other methods (405 Method Not Allowed)
+            // This must come BEFORE the unknown-method check so that bad methods
+            // sent to valid paths get 405 instead of 501.
             var allowedMethods = _router.GetAllowedMethods(request.Path.AsSpan());
             if (allowedMethods != null && allowedMethods.Count > 0)
             {
@@ -92,6 +82,18 @@ public sealed partial class EffinitiveServer
                 response.Headers["Allow"] = string.Join(", ", allowedMethods);
                 response.Body = System.Text.Encoding.UTF8.GetBytes("Method Not Allowed");
                 response.ContentType = "text/plain";
+                return;
+            }
+
+            // Unknown method on unknown path
+            bool isKnownMethod = request.Method is "GET" or "POST" or "PUT" or "DELETE" or
+                "PATCH" or "HEAD" or "OPTIONS" or "TRACE" or "CONNECT";
+            if (!isKnownMethod)
+            {
+                response.StatusCode = 400;
+                response.Body = System.Text.Encoding.UTF8.GetBytes($"Bad Request: unknown method {request.Method}");
+                response.ContentType = "text/plain";
+                response.KeepAlive = false;
                 return;
             }
 

@@ -180,15 +180,15 @@ public class RequestValidationTests
     }
 
     [Fact]
-    public void ValidateRequest_Expect100ContinueWithBodyAlreadySent_Returns400()
+    public void ValidateRequest_Expect100ContinueWithBodyAlreadySent_Continues()
     {
+        // Curl and other clients legitimately send body alongside Expect: 100-continue
         var request = MakeRequest(method: "POST");
         request.Headers["Expect"] = "100-continue";
         request.ContentLength = 10;
         request.Body = new byte[10];
         var result = _server.ValidateRequest(request);
-        Assert.Equal(EffinitiveServer.ValidationAction.CloseConnection, result.Action);
-        Assert.Equal(400, result.Response!.StatusCode);
+        Assert.Equal(EffinitiveServer.ValidationAction.Continue, result.Action);
     }
 
     // ── Accept content negotiation ──

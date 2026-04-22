@@ -135,16 +135,8 @@ public sealed partial class EffinitiveServer
                     ? ValidationResult.Respond(expectResponse)
                     : ValidationResult.Close(expectResponse);
             }
-            // Expect: 100-continue with body already sent — reject as smuggling vector
-            if (request.ContentLength > 0 && request.Body.Length > 0)
-            {
-                return ValidationResult.Close(new HttpResponse
-                {
-                    StatusCode = 400, KeepAlive = false,
-                    Body = System.Text.Encoding.UTF8.GetBytes("Expect: 100-continue with body already sent"),
-                    ContentType = "text/plain"
-                });
-            }
+            // Expect: 100-continue — body may already be sent by clients like curl.
+            // Just proceed normally; the body has already been read by the parser.
         }
 
         // Content negotiation: reject unsupported Accept types (RFC 9110 §12.5.1)

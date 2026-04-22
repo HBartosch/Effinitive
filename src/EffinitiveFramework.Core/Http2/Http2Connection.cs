@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Collections.Concurrent;
-using System.IO.Pipelines;
 using System.Net.Sockets;
 using EffinitiveFramework.Core.Http;
 using EffinitiveFramework.Core.Http2.Hpack;
@@ -13,8 +12,6 @@ namespace EffinitiveFramework.Core.Http2;
 public class Http2Connection : IAsyncDisposable
 {
     private readonly Stream _stream;
-    private readonly PipeReader _reader;
-    private readonly PipeWriter _writer;
     private readonly ConcurrentDictionary<int, Http2Stream> _streams = new();
     private readonly ConcurrentDictionary<int, Http2Stream> _pushedStreams = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -53,9 +50,6 @@ public class Http2Connection : IAsyncDisposable
         _maxPushedStreams = maxPushedStreams;
         _maxPushedResourceSize = maxPushedResourceSize;
         _hpackDecoder = new HpackDecoder((int)_headerTableSize, (int)_maxHeaderListSize);
-        var pipe = new Pipe();
-        _reader = pipe.Reader;
-        _writer = pipe.Writer;
     }
     
     /// <summary>
@@ -171,9 +165,7 @@ public class Http2Connection : IAsyncDisposable
         var prefaceLength = Http2Constants.ClientPreface.Length;
         var buffer = new byte[prefaceLength];
         
-        var bytesRead = await _stream.ReadAsync(buffer, 0, prefaceLength, cancellationToken);
-        
-        if (bytesRead != prefaceLength)
+        if (!await ReadExactlyAsync(buffer, 0, prefaceLength, cancellationToken))
             return false;
         
         if (!buffer.AsSpan().SequenceEqual(Http2Constants.ClientPreface))
@@ -188,10 +180,10 @@ public class Http2Connection : IAsyncDisposable
     /// </summary>
     private async Task SendSettingsAsync(CancellationToken cancellationToken)
     {
+        // RFC 7540 §6.5.2: Server MUST NOT send ENABLE_PUSH in its SETTINGS
         var settings = new (ushort id, uint value)[]
         {
             (Http2Constants.SettingsHeaderTableSize, _headerTableSize),
-            (Http2Constants.SettingsEnablePush, _enablePush),
             (Http2Constants.SettingsMaxConcurrentStreams, _maxConcurrentStreams),
             (Http2Constants.SettingsInitialWindowSize, _initialWindowSize),
             (Http2Constants.SettingsMaxFrameSize, _maxFrameSize),
@@ -223,7 +215,7 @@ public class Http2Connection : IAsyncDisposable
             frameBuffer[offset++] = (byte)value;
         }
         
-        await _stream.WriteAsync(frameBuffer, 0, frameBuffer.Length, cancellationToken);
+        await _stream.WriteAsync(frameBuffer.AsMemory(), cancellationToken);
         await _stream.FlushAsync(cancellationToken);
     }
     
@@ -236,18 +228,10 @@ public class Http2Connection : IAsyncDisposable
         
         while (!cancellationToken.IsCancellationRequested)
         {
-            // Read frame header
-            var bytesRead = await _stream.ReadAsync(headerBuffer, 0, Http2Constants.FrameHeaderLength, cancellationToken);
-            
-            if (bytesRead == 0)
+            // Read frame header (must read all 9 bytes)
+            if (!await ReadExactlyAsync(headerBuffer, 0, Http2Constants.FrameHeaderLength, cancellationToken))
             {
                 break; // Connection closed
-            }
-            
-            if (bytesRead != Http2Constants.FrameHeaderLength)
-            {
-                await SendGoAwayAsync(Http2Constants.ErrorProtocolError, cancellationToken);
-                break;
             }
             
             if (!Http2Frame.TryParseHeader(headerBuffer, out var frame))
@@ -266,27 +250,38 @@ public class Http2Connection : IAsyncDisposable
                     break;
                 }
                 
-                var payloadBuffer = ArrayPool<byte>.Shared.Rent(frame.Length);
-                try
+                // Allocate a dedicated buffer (NOT from ArrayPool) so the
+                // payload memory remains valid through async frame processing.
+                var payloadBuffer = new byte[frame.Length];
+                if (!await ReadExactlyAsync(payloadBuffer, 0, frame.Length, cancellationToken))
                 {
-                    bytesRead = await _stream.ReadAsync(payloadBuffer, 0, frame.Length, cancellationToken);
-                    if (bytesRead != frame.Length)
-                    {
-                        await SendGoAwayAsync(Http2Constants.ErrorFrameSizeError, cancellationToken);
-                        break;
-                    }
-                    
-                    frame.Payload = payloadBuffer.AsMemory(0, frame.Length);
+                    await SendGoAwayAsync(Http2Constants.ErrorFrameSizeError, cancellationToken);
+                    break;
                 }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(payloadBuffer);
-                }
+                
+                frame.Payload = payloadBuffer.AsMemory(0, frame.Length);
             }
             
             // Process frame based on type
             await ProcessFrameAsync(frame, cancellationToken);
         }
+    }
+    
+    /// <summary>
+    /// Read exactly <paramref name="count"/> bytes from the stream.
+    /// Returns false when the connection is closed before any data arrives.
+    /// </summary>
+    private async Task<bool> ReadExactlyAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        int totalRead = 0;
+        while (totalRead < count)
+        {
+            var bytesRead = await _stream.ReadAsync(buffer, offset + totalRead, count - totalRead, cancellationToken);
+            if (bytesRead == 0)
+                return totalRead == 0 ? false : throw new IOException("Connection closed mid-frame");
+            totalRead += bytesRead;
+        }
+        return true;
     }
     
     /// <summary>
@@ -598,38 +593,60 @@ public class Http2Connection : IAsyncDisposable
         // Encode headers with HPACK
         var encodedHeaders = _hpackEncoder.EncodeHeaders(headers);
         
-        // Send HEADERS frame
-        var headersFrame = new Http2Frame
-        {
-            Length = encodedHeaders.Length,
-            Type = Http2Constants.FrameTypeHeaders,
-            Flags = Http2Constants.FlagEndHeaders,
-            StreamId = streamId,
-            Payload = encodedHeaders
-        };
-        
         if (response.Body == null || response.Body.Length == 0)
         {
-            // No body, set END_STREAM on HEADERS
-            headersFrame.SetFlag(Http2Constants.FlagEndStream);
+            // No body — send HEADERS with END_HEADERS + END_STREAM
+            var headersFrame = new Http2Frame
+            {
+                Length = encodedHeaders.Length,
+                Type = Http2Constants.FrameTypeHeaders,
+                Flags = (byte)(Http2Constants.FlagEndHeaders | Http2Constants.FlagEndStream),
+                StreamId = streamId,
+                Payload = encodedHeaders
+            };
             await SendFrameAsync(headersFrame, cancellationToken);
         }
         else
         {
-            // Send HEADERS without END_STREAM
-            await SendFrameAsync(headersFrame, cancellationToken);
+            // Combine HEADERS + DATA into a single write to avoid TLS buffering issues
+            var bodyLen = response.Body.Length;
+            var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
+            var dataFrameLen = Http2Constants.FrameHeaderLength + bodyLen;
+            var combined = new byte[headersFrameLen + dataFrameLen];
             
-            // Send DATA frame with body
+            // Write HEADERS frame (END_HEADERS, no END_STREAM)
+            var headersFrame = new Http2Frame
+            {
+                Length = encodedHeaders.Length,
+                Type = Http2Constants.FrameTypeHeaders,
+                Flags = Http2Constants.FlagEndHeaders,
+                StreamId = streamId
+            };
+            headersFrame.WriteHeader(combined);
+            encodedHeaders.AsSpan().CopyTo(combined.AsSpan(Http2Constants.FrameHeaderLength));
+            
+            // Write DATA frame (END_STREAM)
             var dataFrame = new Http2Frame
             {
-                Length = response.Body?.Length ?? 0,
+                Length = bodyLen,
                 Type = Http2Constants.FrameTypeData,
                 Flags = Http2Constants.FlagEndStream,
-                StreamId = streamId,
-                Payload = response.Body ?? Array.Empty<byte>()
+                StreamId = streamId
             };
+            dataFrame.WriteHeader(combined.AsSpan(headersFrameLen));
+            response.Body.AsSpan().CopyTo(combined.AsSpan(headersFrameLen + Http2Constants.FrameHeaderLength));
             
-            await SendFrameAsync(dataFrame, cancellationToken);
+            // Single write for both frames
+            await _writeLock.WaitAsync(cancellationToken);
+            try
+            {
+                await _stream.WriteAsync(combined.AsMemory(), cancellationToken);
+                await _stream.FlushAsync(cancellationToken);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
         }
     }
     
@@ -860,7 +877,7 @@ public class Http2Connection : IAsyncDisposable
             if (frame.Length > 0)
                 frame.Payload.Span.CopyTo(buffer.AsSpan(Http2Constants.FrameHeaderLength));
             
-            await _stream.WriteAsync(buffer, 0, buffer.Length, cancellationToken);
+            await _stream.WriteAsync(buffer.AsMemory(), cancellationToken);
             await _stream.FlushAsync(cancellationToken);
         }
         finally
@@ -871,8 +888,6 @@ public class Http2Connection : IAsyncDisposable
     
     public async ValueTask DisposeAsync()
     {
-        await _reader.CompleteAsync();
-        await _writer.CompleteAsync();
         _writeLock.Dispose();
     }
 }

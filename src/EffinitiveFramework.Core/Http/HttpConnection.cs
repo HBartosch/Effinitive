@@ -70,15 +70,14 @@ public sealed class HttpConnection : IDisposable
             _stream = new NetworkStream(_socket, ownsSocket: false);
         }
 
-        // Create pipelines with 4KB initial buffer
-        var pipeOptions = new PipeOptions(
-            minimumSegmentSize: 4096,
-            pauseWriterThreshold: 65536,
-            resumeWriterThreshold: 32768,
-            useSynchronizationContext: false);
-
-        _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(leaveOpen: false));
-        _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(leaveOpen: false));
+        // Create pipelines with 4KB initial buffer (only for HTTP/1.1)
+        // HTTP/2 reads/writes directly from the stream, so PipeReader/PipeWriter
+        // are not needed and their leaveOpen:false could interfere with the stream.
+        if (NegotiatedProtocol != "h2")
+        {
+            _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(leaveOpen: false));
+            _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(leaveOpen: false));
+        }
     }
 
     /// <summary>
