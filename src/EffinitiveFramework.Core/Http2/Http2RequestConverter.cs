@@ -77,7 +77,7 @@ public static class Http2RequestConverter
             }
         }
         
-        request.Body = body;
+        request.Body = body.AsMemory();
         request.ContentLength = body.Length;
         request.HttpVersion = "HTTP/2.0";
         

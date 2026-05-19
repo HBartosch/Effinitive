@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-05-19
+
+### Added
+- **WebSocket support** (RFC 6455) — `WebSocketConnection` with full framing, fragmentation, ping/pong, and close handshake. `WebSocketEndpointBase` for class-based handlers. `MapWebSocket()` fluent API for inline handlers.
+- **HTTP/3 / QUIC** (RFC 9114, .NET 10+ only) — `Http3Connection` with QPACK header compression (RFC 9204), unidirectional control/encoder/decoder streams, GOAWAY, and settings negotiation. Automatically started alongside HTTPS when `QuicListener.IsSupported` is true.
+- **Static file serving** — `StaticFileHandler` pre-loads all files from `wwwroot` into a `FrozenDictionary` at startup for zero per-request I/O. Supports configurable URL prefix, cache-control headers, and 25+ MIME types including fonts, wasm, and pdf.
+- **Response compression middleware** — `ResponseCompressionMiddleware` marks eligible responses for gzip compression. Defers actual compression to `HttpResponseWriter` for a single-pipeline serialize+compress pass (matching Kestrel's approach). Configurable compression level, minimum body size, and compressible content types.
+- **High-performance transport layer** — `SocketTransportConnection` with separated read/write loops, `IOQueue` PipeScheduler for batching continuations, `SocketSenderPool` for pooled zero-allocation `SocketAsyncEventArgs`, and `SocketReceiver` for async receive. Connections round-robined across `IOQueue.DefaultCount` queues.
+- **`PipeReaderBodyStream`** — `Stream` adapter over `PipeReader` for streaming large request bodies without buffering them entirely in memory.
+- **`UseResponseCompression()`** fluent API on `EffinitiveAppBuilder`.
+- **`UseStaticFiles()`** fluent API (path + options overloads) on `EffinitiveAppBuilder`.
+- **`MapWebSocket()`** fluent API on `EffinitiveAppBuilder`.
+- **`HttpContext` on endpoints** — `NoRequestEndpointBase` exposes `HttpContext` for accessing raw request data (body, route values, headers) without a typed request parameter.
+- **Dual-target package** — NuGet package now targets both `net8.0` and `net10.0`; HTTP/3 types are compiled only on `net10.0`.
+
+### Changed
+- `EffinitiveServer` constructor now creates `IOQueue` and `SocketSenderPool` arrays for the new transport layer.
+- `Router` stores WebSocket routes in a frozen dictionary alongside HTTP routes and exposes `AddWebSocketRoute()`.
+- `ThreadPool` minimum threads raised to `max(256, ProcessorCount × 8)` to handle HTTP/2 stream concurrency at scale.
+- Send buffer increased to 256 KB to accommodate compressed response payloads.
+- Package version bumped to **2.0.0**.
+
+### Fixed
+- (Included from v1.3.1) HTTP/2 `SETTINGS` frame incorrectly advertised `ENABLE_PUSH=1`, causing RFC 7540 §6.5.2 violations that some clients rejected.
+- (Included from v1.3.1) Partial network reads in client preface and frame reads could stall connections.
+- (Included from v1.3.1) `PipeReader`/`PipeWriter` interference with HTTP/2 direct stream I/O.
+- (Included from v1.3.1) HTTP/1.1 routing: unknown methods on known paths now return `405 Method Not Allowed` instead of `501`.
+- (Included from v1.3.1) Incorrect rejection of `Expect: 100-continue` requests that included a body.
+
+### Roadmap Updated
+- [x] Response compression (gzip) — ✅ IMPLEMENTED
+- [x] WebSocket support — ✅ IMPLEMENTED
+- [x] Static file serving — ✅ IMPLEMENTED
+- [x] HTTP/3 / QUIC — ✅ IMPLEMENTED (experimental, .NET 10+)
+
+---
+
+## [1.3.1] - 2026-03-15
+
+### Fixed
+- **HTTP/2 ENABLE_PUSH violation** — Server was sending `SETTINGS` frame with `ENABLE_PUSH=1` (RFC 7540 §6.5.2 requires servers to send `0`). Clients such as `h2spec` and some browsers rejected the connection.
+- **Partial network reads** — Client preface and frame header reads now loop until all expected bytes arrive, preventing stalls on slow or batched TCP segments.
+- **PipeReader/PipeWriter interference** — HTTP/2 no longer wraps the TLS `SslStream` in a `PipeReader`/`PipeWriter`, which was interleaving reads with direct stream I/O and causing frame corruption.
+- **Batched TLS write** — `HEADERS` + `DATA` response frames are now written in a single `SslStream.WriteAsync` call, preventing race conditions and improving reliability.
+- **HTTP/1.1 method routing** — Requests with an unrecognised HTTP method on a known route now correctly return `405 Method Not Allowed` (was `501 Not Implemented`).
+- **Expect: 100-continue** — Requests carrying `Expect: 100-continue` with a body were incorrectly rejected; the framework now sends `100 Continue` and reads the body.
+
+---
+
+## [1.3.0] - 2026-02-10
+
+### Added
+- **Full RFC 9110/9112 compliance** — HTTP semantics and message syntax strictly validated against the updated HTTP core RFCs.
+- **ETag support** — Automatic weak ETag generation (`W/"..."`) for JSON responses; conditional request handling for `If-None-Match` / `If-Match`.
+- **Cookie parsing** — `HttpRequest.Cookies` dictionary populated from the `Cookie` header on every request.
+- **Request validation improvements** — Enhanced `Routya.ResultKit` integration with richer problem-details error messages.
+
+### Changed
+- Refactored server internals for cleaner separation between connection handling, request validation, request routing, and helper utilities (now split across four partial-class files).
+- ETag comparison uses span-based, allocation-free matching.
+
+---
+
 ## [1.2.0] - 2026-01-20
 
 ### Performance - Major Stress Test Optimizations 🚀

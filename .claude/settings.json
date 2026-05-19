@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:5000/api/health)",
+      "Bash(wsl -d Ubuntu bash -c \"find /usr /opt /home -name 'dotnet' -type f 2>/dev/null | head -5; ls /usr/share/dotnet 2>/dev/null | head -5\")"
+    ]
+  }
+}

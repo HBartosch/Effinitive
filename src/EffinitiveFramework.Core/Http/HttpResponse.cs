@@ -1,3 +1,6 @@
+using System.IO.Compression;
+using System.Text.Json;
+
 namespace EffinitiveFramework.Core.Http;
 
 /// <summary>
@@ -10,6 +13,9 @@ public delegate Task StreamHandler(Stream stream, CancellationToken cancellation
 /// </summary>
 public sealed class HttpResponse
 {
+    private Dictionary<string, string>? _headers;
+    private string _contentType = "application/json";
+
     /// <summary>
     /// HTTP status code (200, 404, 500, etc.)
     /// </summary>
@@ -18,12 +24,33 @@ public sealed class HttpResponse
     /// <summary>
     /// Response headers (name -> value)
     /// </summary>
-    public Dictionary<string, string> Headers { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> Headers => _headers ??= new(StringComparer.OrdinalIgnoreCase);
+
+    internal Dictionary<string, string>? HeadersOrNull => _headers;
 
     /// <summary>
     /// Response body as byte array
     /// </summary>
     public byte[]? Body { get; set; }
+
+    /// <summary>
+    /// Deferred response body object for single-pass serialization + compression.
+    /// When set, the body will be serialized lazily — either through a compression
+    /// stream (single-pass) or directly to bytes at write time.
+    /// </summary>
+    public object? BodyObject { get; set; }
+
+    /// <summary>
+    /// JSON serializer options used when materializing BodyObject.
+    /// </summary>
+    public JsonSerializerOptions? BodySerializerOptions { get; set; }
+
+    /// <summary>
+    /// When set, indicates the response body should be gzip-compressed at write time.
+    /// The compression middleware sets this instead of compressing eagerly,
+    /// allowing the writer to serialize + compress in one pipeline with pooled buffers.
+    /// </summary>
+    public CompressionLevel? GzipCompressionLevel { get; set; }
 
     /// <summary>
     /// Stream handler for streaming responses (SSE, chunked transfer, etc.)
@@ -41,8 +68,13 @@ public sealed class HttpResponse
     /// </summary>
     public string ContentType
     {
-        get => Headers.TryGetValue("Content-Type", out var value) ? value : "application/json";
-        set => Headers["Content-Type"] = value;
+        get => _headers != null && _headers.TryGetValue("Content-Type", out var value) ? value : _contentType;
+        set
+        {
+            _contentType = value;
+            if (_headers != null)
+                _headers["Content-Type"] = value;
+        }
     }
 
     /// <summary>
@@ -82,9 +114,27 @@ public sealed class HttpResponse
     public void Reset()
     {
         StatusCode = 200;
-        Headers.Clear();
+        _headers?.Clear();
         Body = null;
+        BodyObject = null;
+        BodySerializerOptions = null;
+        GzipCompressionLevel = null;
         StreamHandler = null;
         KeepAlive = true;
+        _contentType = "application/json";
+    }
+
+    /// <summary>
+    /// Materialize BodyObject into Body if deferred serialization is pending.
+    /// Called by response writers and after middleware processing.
+    /// </summary>
+    public void MaterializeDeferredBody()
+    {
+        if (Body == null && BodyObject != null)
+        {
+            Body = JsonSerializer.SerializeToUtf8Bytes(BodyObject, BodyObject.GetType(), BodySerializerOptions);
+            BodyObject = null;
+            BodySerializerOptions = null;
+        }
     }
 }

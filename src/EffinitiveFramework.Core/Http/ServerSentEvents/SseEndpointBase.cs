@@ -98,11 +98,11 @@ public abstract class SseEndpointBase<TRequest> : IEndpoint where TRequest : new
         else
         {
             // For non-empty requests, deserialize from JSON
-            var requestBody = httpRequest.Body ?? Array.Empty<byte>();
+            var requestBody = httpRequest.Body;
             if (requestBody.Length > 0)
             {
                 request = await System.Text.Json.JsonSerializer.DeserializeAsync<TRequest>(
-                    new MemoryStream(requestBody), 
+                    new MemoryStream(requestBody.ToArray()), 
                     cancellationToken: cancellationToken) ?? new TRequest();
             }
             else
@@ -176,11 +176,11 @@ public abstract class SseEndpointBase<TRequest, TEventData> : IEndpoint where TR
         else
         {
             // For non-empty requests, deserialize from JSON
-            var requestBody = httpRequest.Body ?? Array.Empty<byte>();
+            var requestBody = httpRequest.Body;
             if (requestBody.Length > 0)
             {
                 request = await System.Text.Json.JsonSerializer.DeserializeAsync<TRequest>(
-                    new MemoryStream(requestBody), 
+                    new MemoryStream(requestBody.ToArray()), 
                     cancellationToken: cancellationToken) ?? new TRequest();
             }
             else

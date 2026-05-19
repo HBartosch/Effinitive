@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
+using EffinitiveFramework.Core.WebSocket;
 
 namespace EffinitiveFramework.Core;
 
@@ -12,9 +13,14 @@ public sealed class Router
     private readonly Dictionary<string, RouteNode> _mutableRoutes =
         new(StringComparer.OrdinalIgnoreCase);
 
+    // WebSocket routes — keyed by path
+    private readonly Dictionary<string, Func<WebSocketConnection, CancellationToken, Task>> _wsRoutes =
+        new(StringComparer.OrdinalIgnoreCase);
+
     // Runtime stores — immutable, populated by Freeze()
     private FrozenDictionary<string, RouteNode>? _frozenRoutes;
     private FrozenDictionary<string, ParametricRoute[]>? _paramRoutes;
+    private FrozenDictionary<string, Func<WebSocketConnection, CancellationToken, Task>>? _frozenWsRoutes;
     private bool _frozen;
 
     /// <summary>
@@ -41,6 +47,31 @@ public sealed class Router
         var key = $"{method}:{pattern}";
         if (!_mutableRoutes.TryGetValue(key, out _))
             _mutableRoutes[key] = new RouteNode(pattern, null, endpointType, invoker);
+    }
+
+    /// <summary>
+    /// Register a WebSocket route with a handler delegate.
+    /// </summary>
+    public void AddWebSocketRoute(string path, Func<WebSocketConnection, CancellationToken, Task> handler)
+    {
+        if (_frozen)
+            throw new InvalidOperationException("Cannot add routes after Router.Freeze() has been called.");
+
+        _wsRoutes[path] = handler;
+    }
+
+    /// <summary>
+    /// Find WebSocket handler for a given path.
+    /// </summary>
+    public Func<WebSocketConnection, CancellationToken, Task>? FindWebSocketRoute(ReadOnlySpan<char> path)
+    {
+        if (_frozenWsRoutes == null) return null;
+#if NET9_0_OR_GREATER
+        var lookup = _frozenWsRoutes.GetAlternateLookup<ReadOnlySpan<char>>();
+        return lookup.TryGetValue(path, out var handler) ? handler : null;
+#else
+        return _frozenWsRoutes.TryGetValue(path.ToString(), out var handler) ? handler : null;
+#endif
     }
 
     /// <summary>
@@ -80,6 +111,9 @@ public sealed class Router
         foreach (var kv in byMethod)
             final[kv.Key] = [.. kv.Value];
         _paramRoutes = final.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+        // Freeze WebSocket routes
+        _frozenWsRoutes = _wsRoutes.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>

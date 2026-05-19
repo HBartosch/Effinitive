@@ -40,6 +40,14 @@ public sealed class MiddlewarePipeline
     }
 
     /// <summary>
+    /// Add a pre-created middleware instance
+    /// </summary>
+    public void Use(IMiddleware middleware)
+    {
+        Use(next => (request, cancellationToken) => middleware.InvokeAsync(request, next, cancellationToken));
+    }
+
+    /// <summary>
     /// Add middleware with inline lambda
     /// </summary>
     public void Use(Func<HttpRequest, RequestDelegate, CancellationToken, ValueTask<HttpResponse>> middleware)

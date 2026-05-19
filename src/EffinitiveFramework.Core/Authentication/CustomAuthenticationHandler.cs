@@ -50,22 +50,6 @@ public abstract class CustomAuthenticationHandler : IAuthenticationHandler
     /// </summary>
     protected string? GetQueryParameter(HttpRequest request, string parameterName)
     {
-        var queryIndex = request.Path.IndexOf('?');
-        if (queryIndex < 0)
-            return null;
-
-        var queryString = request.Path.Substring(queryIndex + 1);
-        var parameters = queryString.Split('&', StringSplitOptions.RemoveEmptyEntries);
-
-        foreach (var param in parameters)
-        {
-            var parts = param.Split('=', 2);
-            if (parts.Length == 2 && parts[0].Equals(parameterName, StringComparison.OrdinalIgnoreCase))
-            {
-                return Uri.UnescapeDataString(parts[1]);
-            }
-        }
-
-        return null;
+        return request.Query.Get(parameterName);
     }
 }

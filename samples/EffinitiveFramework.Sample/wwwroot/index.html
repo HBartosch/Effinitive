@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EffinitiveFramework v2.0 Demo</title>
+  <link rel="stylesheet" href="/static/demo.css" />
+</head>
+<body>
+  <header>
+    <h1>EffinitiveFramework <span class="version">v2.0</span></h1>
+    <p class="tagline">WebSocket · SSE · Static Files · Gzip Compression · HTTP/3</p>
+  </header>
+
+  <main>
+
+    <!-- ── Health / HTTP ─────────────────────────────────────────── -->
+    <section class="card" id="section-health">
+      <h2>HTTP Endpoint + Gzip Compression</h2>
+      <p class="desc">
+        Fetches <code>GET /api/health</code>. The server applies gzip when the browser sends
+        <code>Accept-Encoding: gzip</code>.
+      </p>
+      <button id="btn-health">Fetch /api/health</button>
+      <pre id="out-health" class="output">(not fetched yet)</pre>
+    </section>
+
+    <!-- ── SSE ───────────────────────────────────────────────────── -->
+    <section class="card" id="section-sse">
+      <h2>Server-Sent Events</h2>
+      <p class="desc">
+        Connects to <code>GET /api/stream/time</code>. Events arrive once per second —
+        no polling, no WebSocket handshake needed.
+      </p>
+      <div class="btn-row">
+        <button id="btn-sse-connect">Connect</button>
+        <button id="btn-sse-disconnect" disabled>Disconnect</button>
+      </div>
+      <div id="sse-status" class="status status-off">Disconnected</div>
+      <ul id="out-sse" class="event-log"></ul>
+    </section>
+
+    <!-- ── WebSocket Echo ────────────────────────────────────────── -->
+    <section class="card" id="section-echo">
+      <h2>WebSocket — Echo Server</h2>
+      <p class="desc">
+        Connects to <code>ws://localhost:5000/ws/echo</code>. Every message you send is
+        echoed back with a server timestamp.
+      </p>
+      <div class="btn-row">
+        <button id="btn-echo-connect">Connect</button>
+        <button id="btn-echo-disconnect" disabled>Disconnect</button>
+      </div>
+      <div id="echo-status" class="status status-off">Disconnected</div>
+      <div class="input-row">
+        <input id="echo-input" type="text" placeholder="Type a message…" disabled />
+        <button id="btn-echo-send" disabled>Send</button>
+      </div>
+      <ul id="out-echo" class="event-log"></ul>
+    </section>
+
+    <!-- ── WebSocket Metrics ─────────────────────────────────────── -->
+    <section class="card" id="section-metrics">
+      <h2>WebSocket — Live Server Metrics</h2>
+      <p class="desc">
+        Connects to <code>ws://localhost:5000/ws/metrics</code>. The server pushes
+        GC memory, thread-pool availability, and process uptime once per second.
+      </p>
+      <div class="btn-row">
+        <button id="btn-metrics-connect">Connect</button>
+        <button id="btn-metrics-disconnect" disabled>Disconnect</button>
+      </div>
+      <div id="metrics-status" class="status status-off">Disconnected</div>
+      <div class="metrics-grid" id="metrics-grid">
+        <div class="metric-box"><span class="metric-label">GC Memory</span><span class="metric-value" id="m-gc">—</span></div>
+        <div class="metric-box"><span class="metric-label">Free Workers</span><span class="metric-value" id="m-workers">—</span></div>
+        <div class="metric-box"><span class="metric-label">Free I/O Threads</span><span class="metric-value" id="m-io">—</span></div>
+        <div class="metric-box"><span class="metric-label">Uptime</span><span class="metric-value" id="m-uptime">—</span></div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <p>Served as a static file from <code>wwwroot/</code> — zero per-request I/O via FrozenDictionary cache.</p>
+  </footer>
+
+  <script>
+    // ── Health fetch ──────────────────────────────────────────────────────────
+    document.getElementById('btn-health').addEventListener('click', async () => {
+      const out = document.getElementById('out-health');
+      out.textContent = 'Fetching…';
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        out.textContent = `HTTP ${res.status}\n` + JSON.stringify(data, null, 2);
+        if (res.headers.get('Content-Encoding') === 'gzip')
+          out.textContent += '\n\n(response was gzip-compressed)';
+      } catch (e) {
+        out.textContent = 'Error: ' + e.message;
+      }
+    });
+
+    // ── SSE ───────────────────────────────────────────────────────────────────
+    let sseSource = null;
+    const sseLog = document.getElementById('out-sse');
+    const sseStatus = document.getElementById('sse-status');
+
+    function sseAppend(text, cls) {
+      const li = document.createElement('li');
+      li.textContent = text;
+      if (cls) li.className = cls;
+      sseLog.prepend(li);
+      while (sseLog.children.length > 20) sseLog.removeChild(sseLog.lastChild);
+    }
+
+    document.getElementById('btn-sse-connect').addEventListener('click', () => {
+      if (sseSource) return;
+      sseSource = new EventSource('/api/stream/time');
+      sseStatus.textContent = 'Connecting…';
+      sseStatus.className = 'status status-connecting';
+
+      sseSource.addEventListener('open', () => {
+        sseStatus.textContent = 'Connected';
+        sseStatus.className = 'status status-on';
+        document.getElementById('btn-sse-connect').disabled = true;
+        document.getElementById('btn-sse-disconnect').disabled = false;
+      });
+
+      sseSource.addEventListener('connected', e => sseAppend('▸ ' + e.data, 'event-system'));
+      sseSource.addEventListener('time-update', e => {
+        try { const d = JSON.parse(e.data); sseAppend('⏱ ' + d.datetime); }
+        catch { sseAppend('⏱ ' + e.data); }
+      });
+      sseSource.addEventListener('error', () => {
+        sseStatus.textContent = 'Error / reconnecting…';
+        sseStatus.className = 'status status-error';
+      });
+    });
+
+    document.getElementById('btn-sse-disconnect').addEventListener('click', () => {
+      if (sseSource) { sseSource.close(); sseSource = null; }
+      sseStatus.textContent = 'Disconnected';
+      sseStatus.className = 'status status-off';
+      document.getElementById('btn-sse-connect').disabled = false;
+      document.getElementById('btn-sse-disconnect').disabled = true;
+    });
+
+    // ── WebSocket Echo ────────────────────────────────────────────────────────
+    let echoWs = null;
+    const echoLog = document.getElementById('out-echo');
+    const echoStatus = document.getElementById('echo-status');
+
+    function echoAppend(text, cls) {
+      const li = document.createElement('li');
+      li.textContent = text;
+      if (cls) li.className = cls;
+      echoLog.prepend(li);
+      while (echoLog.children.length > 30) echoLog.removeChild(echoLog.lastChild);
+    }
+
+    function setEchoConnected(connected) {
+      document.getElementById('btn-echo-connect').disabled = connected;
+      document.getElementById('btn-echo-disconnect').disabled = !connected;
+      document.getElementById('echo-input').disabled = !connected;
+      document.getElementById('btn-echo-send').disabled = !connected;
+    }
+
+    document.getElementById('btn-echo-connect').addEventListener('click', () => {
+      echoWs = new WebSocket(`ws://${location.host}/ws/echo`);
+      echoStatus.textContent = 'Connecting…';
+      echoStatus.className = 'status status-connecting';
+
+      echoWs.onopen = () => {
+        echoStatus.textContent = 'Connected';
+        echoStatus.className = 'status status-on';
+        setEchoConnected(true);
+      };
+      echoWs.onmessage = e => {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.event === 'connected') echoAppend('▸ ' + d.message, 'event-system');
+          else if (d.event === 'echo') echoAppend(`← ${d.original}  [${d.timestamp}]`, 'event-echo');
+          else echoAppend(e.data);
+        } catch { echoAppend(e.data); }
+      };
+      echoWs.onclose = () => {
+        echoStatus.textContent = 'Disconnected';
+        echoStatus.className = 'status status-off';
+        setEchoConnected(false);
+        echoWs = null;
+      };
+      echoWs.onerror = () => {
+        echoStatus.textContent = 'Error';
+        echoStatus.className = 'status status-error';
+      };
+    });
+
+    document.getElementById('btn-echo-disconnect').addEventListener('click', () => {
+      echoWs?.close(); echoWs = null;
+    });
+
+    function sendEchoMessage() {
+      const input = document.getElementById('echo-input');
+      const text = input.value.trim();
+      if (!text || !echoWs) return;
+      echoAppend('→ ' + text, 'event-send');
+      echoWs.send(text);
+      input.value = '';
+    }
+
+    document.getElementById('btn-echo-send').addEventListener('click', sendEchoMessage);
+    document.getElementById('echo-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendEchoMessage(); });
+
+    // ── WebSocket Metrics ─────────────────────────────────────────────────────
+    let metricsWs = null;
+    const metricsStatus = document.getElementById('metrics-status');
+
+    function setMetricsConnected(connected) {
+      document.getElementById('btn-metrics-connect').disabled = connected;
+      document.getElementById('btn-metrics-disconnect').disabled = !connected;
+    }
+
+    function fmtBytes(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / (1024 * 1024)).toFixed(2) + ' MB';
+    }
+
+    function fmtUptime(s) {
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      return `${h}h ${m}m ${sec}s`;
+    }
+
+    document.getElementById('btn-metrics-connect').addEventListener('click', () => {
+      metricsWs = new WebSocket(`ws://${location.host}/ws/metrics`);
+      metricsStatus.textContent = 'Connecting…';
+      metricsStatus.className = 'status status-connecting';
+
+      metricsWs.onopen = () => {
+        metricsStatus.textContent = 'Connected — receiving metrics every 1s';
+        metricsStatus.className = 'status status-on';
+        setMetricsConnected(true);
+      };
+      metricsWs.onmessage = e => {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.event === 'metrics') {
+            document.getElementById('m-gc').textContent = fmtBytes(d.gcMemoryBytes);
+            document.getElementById('m-workers').textContent = d.workerThreadsFree;
+            document.getElementById('m-io').textContent = d.ioThreadsFree;
+            document.getElementById('m-uptime').textContent = fmtUptime(d.uptimeSeconds);
+          }
+        } catch { /* ignore schema message */ }
+      };
+      metricsWs.onclose = () => {
+        metricsStatus.textContent = 'Disconnected';
+        metricsStatus.className = 'status status-off';
+        setMetricsConnected(false);
+        metricsWs = null;
+      };
+      metricsWs.onerror = () => {
+        metricsStatus.textContent = 'Error';
+        metricsStatus.className = 'status status-error';
+      };
+    });
+
+    document.getElementById('btn-metrics-disconnect').addEventListener('click', () => {
+      metricsWs?.close(); metricsWs = null;
+    });
+  </script>
+</body>
+</html>

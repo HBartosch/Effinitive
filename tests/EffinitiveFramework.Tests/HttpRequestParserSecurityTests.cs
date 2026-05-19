@@ -30,7 +30,7 @@ public class HttpRequestParserSecurityTests
         var request = Parse(raw);
         Assert.Equal("POST", request.Method);
         Assert.Equal(body.Length, request.ContentLength);
-        Assert.Equal(body, Encoding.UTF8.GetString(request.Body));
+        Assert.Equal(body, Encoding.UTF8.GetString(request.Body.Span));
     }
 
     // ── Method validation ──

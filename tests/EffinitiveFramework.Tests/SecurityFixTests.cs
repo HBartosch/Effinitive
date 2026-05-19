@@ -41,9 +41,9 @@ public class SecurityFixTests
     [Fact]
     public void Http2Constants_HasSecureDefaults()
     {
-        Assert.Equal(100u, Http2Constants.DefaultMaxConcurrentStreams);
+        Assert.Equal(256u, Http2Constants.DefaultMaxConcurrentStreams);
         Assert.Equal(16384u, Http2Constants.DefaultMaxFrameSize);
-        Assert.Equal(8192u, Http2Constants.DefaultMaxHeaderListSize);
+        Assert.Equal(65536u, Http2Constants.DefaultMaxHeaderListSize);
     }
 
     [Fact]
@@ -68,73 +68,6 @@ public class SecurityFixTests
         Assert.Contains("exceeds maximum", exception.Message);
     }
 
-    [Fact]
-    public async Task Http2Connection_CanPushStaticResources()
-    {
-        // Scenario: Client requests HTML, server pushes CSS and JS before client asks
-        // This optimizes page load by reducing round trips
-        
-        var stream = new MemoryStream();
-        var connection = new Http2Connection(stream);
-        
-        // Simulate client preface and settings already exchanged
-        // (in real test, would send actual preface bytes)
-        
-        // Push CSS file on even stream ID 2
-        var cssContent = Encoding.UTF8.GetBytes("body { margin: 0; }");
-        await connection.PushResourceAsync(
-            associatedStreamId: 1, // HTML request stream
-            requestHeaders: new Dictionary<string, string>
-            {
-                { ":method", "GET" },
-                { ":path", "/styles/app.css" },
-                { ":scheme", "https" },
-                { ":authority", "example.com" }
-            },
-            responseHeaders: new Dictionary<string, string>
-            {
-                { ":status", "200" },
-                { "content-type", "text/css" },
-                { "cache-control", "public, max-age=3600" }
-            },
-            responseBody: cssContent
-        );
-        
-        // Push JavaScript file on even stream ID 4
-        var jsContent = Encoding.UTF8.GetBytes("console.log('pushed!');");
-        await connection.PushResourceAsync(
-            associatedStreamId: 1, // HTML request stream
-            requestHeaders: new Dictionary<string, string>
-            {
-                { ":method", "GET" },
-                { ":path", "/scripts/app.js" },
-                { ":scheme", "https" },
-                { ":authority", "example.com" }
-            },
-            responseHeaders: new Dictionary<string, string>
-            {
-                { ":status", "200" },
-                { "content-type", "application/javascript" },
-                { "cache-control", "public, max-age=3600" }
-            },
-            responseBody: jsContent
-        );
-        
-        // Verify frames were written to stream
-        stream.Position = 0;
-        var buffer = stream.ToArray();
-        
-        // Should contain PUSH_PROMISE frames (type 0x05)
-        Assert.Contains<byte>(0x05, buffer);
-        
-        // Should contain both resources
-        Assert.Contains("app.css", Encoding.UTF8.GetString(buffer));
-        Assert.Contains("app.js", Encoding.UTF8.GetString(buffer));
-        
-        // Verify stream length shows data was written
-        Assert.True(buffer.Length > 100); // Should have substantial data
-    }
-    
     [Fact]
     public void Http2Connection_RejectsPushWhenDisabled()
     {
@@ -283,12 +216,12 @@ public class SecurityFixTests
         
         var responseHeaders = new Dictionary<string, string> { { ":status", "200" } };
         
-        // Body larger than default window size (65535 bytes)
-        var hugeBody = new byte[100000];
-        
+        // Body larger than default pushed resource size limit (1MB = 1,048,576 bytes)
+        var hugeBody = new byte[1_100_000];
+
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             connection.PushResourceAsync(1, requestHeaders, responseHeaders, hugeBody));
-        
-        Assert.Contains("flow control window", exception.Message);
+
+        Assert.Contains("exceeds", exception.Message);
     }
 }

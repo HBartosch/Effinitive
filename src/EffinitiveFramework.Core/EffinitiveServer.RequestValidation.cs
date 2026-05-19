@@ -166,7 +166,8 @@ public sealed partial class EffinitiveServer
     {
         if ((!request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) && !isHead)
             || response.StatusCode < 200 || response.StatusCode >= 300
-            || response.StatusCode == 204)
+            || response.StatusCode == 204
+            || response.IsStreaming)
             return;
 
         // Generate ETag from response body if not already set

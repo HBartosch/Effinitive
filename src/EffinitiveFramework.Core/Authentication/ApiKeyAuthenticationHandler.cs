@@ -60,7 +60,7 @@ public sealed class ApiKeyAuthenticationHandler : IAuthenticationHandler
         // Try query string if enabled and not found in header
         else if (_options.AllowQueryString && !string.IsNullOrWhiteSpace(_options.QueryStringParameterName))
         {
-            apiKey = ExtractQueryStringParameter(request.Path, _options.QueryStringParameterName);
+            request.Query.TryGetValue(_options.QueryStringParameterName, out apiKey);
         }
 
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -77,26 +77,5 @@ public sealed class ApiKeyAuthenticationHandler : IAuthenticationHandler
         {
             return AuthenticationResult.Fail($"API key validation failed: {ex.Message}");
         }
-    }
-
-    private static string? ExtractQueryStringParameter(string path, string parameterName)
-    {
-        var queryIndex = path.IndexOf('?');
-        if (queryIndex < 0)
-            return null;
-
-        var queryString = path.Substring(queryIndex + 1);
-        var parameters = queryString.Split('&', StringSplitOptions.RemoveEmptyEntries);
-
-        foreach (var param in parameters)
-        {
-            var parts = param.Split('=', 2);
-            if (parts.Length == 2 && parts[0].Equals(parameterName, StringComparison.OrdinalIgnoreCase))
-            {
-                return Uri.UnescapeDataString(parts[1]);
-            }
-        }
-
-        return null;
     }
 }

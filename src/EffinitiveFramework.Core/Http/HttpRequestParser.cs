@@ -115,7 +115,7 @@ public static class HttpRequestParser
                 return false; // Need more data
             }
 
-            request.Body = body;
+            request.Body = body.AsMemory();
             request.ContentLength = body.Length;
             reader.Advance(chunkBytesConsumed);
         }
@@ -127,15 +127,28 @@ public static class HttpRequestParser
                 throw new InvalidOperationException($"Request body size {request.ContentLength} exceeds maximum allowed size {maxBodySize}");
             }
 
+            // Large bodies (> 1 MB) are streamed to avoid large heap allocations.
+            // The connection handler attaches a PipeReaderBodyStream for the endpoint.
+            const int StreamingThreshold = 1 * 1024 * 1024; // 1 MB
+            if (request.ContentLength > StreamingThreshold)
+            {
+                // Return immediately — body remains in the pipe for streaming
+                consumed = reader.Position;
+                bytesConsumed = (int)reader.Consumed;
+                request.BodyDeferred = true;
+                return true;
+            }
+
             if (reader.Remaining < request.ContentLength)
             {
                 return false; // Need more data
             }
 
-            // Read body into byte array
-            var bodyBytes = new byte[request.ContentLength];
-            reader.UnreadSequence.Slice(0, request.ContentLength).CopyTo(bodyBytes);
-            request.Body = bodyBytes;
+            // Read body into a pooled buffer to avoid per-request heap allocations
+            var rentedBuffer = ArrayPool<byte>.Shared.Rent((int)request.ContentLength);
+            reader.UnreadSequence.Slice(0, request.ContentLength).CopyTo(rentedBuffer);
+            request.RentedBodyBuffer = rentedBuffer;
+            request.Body = new ReadOnlyMemory<byte>(rentedBuffer, 0, (int)request.ContentLength);
             reader.Advance(request.ContentLength);
         }
 

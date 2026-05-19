@@ -4,6 +4,8 @@ using EffinitiveFramework.Core.Configuration;
 using EffinitiveFramework.Core.DependencyInjection;
 using EffinitiveFramework.Core.Middleware;
 using EffinitiveFramework.Core.Http;
+using EffinitiveFramework.Core.StaticFiles;
+using EffinitiveFramework.Core.WebSocket;
 
 namespace EffinitiveFramework.Core;
 
@@ -17,6 +19,7 @@ public sealed class EffinitiveAppBuilder
     private readonly ServiceCollection _services = new();
     private readonly List<Action<MiddlewarePipeline>> _middlewareConfigurators = new();
     private Assembly? _endpointsAssembly;
+    private StaticFileHandler? _staticFileHandler;
 
     /// <summary>
     /// Configure services for dependency injection
@@ -42,6 +45,19 @@ public sealed class EffinitiveAppBuilder
     public EffinitiveAppBuilder Use(Func<HttpRequest, RequestDelegate, CancellationToken, ValueTask<HttpResponse>> middleware)
     {
         _middlewareConfigurators.Add(pipeline => pipeline.Use(middleware));
+        return this;
+    }
+
+    /// <summary>
+    /// Enable response compression middleware (gzip).
+    /// Compresses responses for clients that support gzip based on Accept-Encoding header.
+    /// </summary>
+    public EffinitiveAppBuilder UseResponseCompression(
+        System.IO.Compression.CompressionLevel compressionLevel = System.IO.Compression.CompressionLevel.Fastest,
+        int minimumSize = 1024)
+    {
+        _middlewareConfigurators.Add(pipeline => 
+            pipeline.Use(new ResponseCompressionMiddleware(compressionLevel, minimumSize)));
         return this;
     }
 
@@ -125,6 +141,42 @@ public sealed class EffinitiveAppBuilder
     }
 
     /// <summary>
+    /// Map a WebSocket endpoint at the given path.
+    /// The handler receives a WebSocketConnection for bidirectional message exchange.
+    /// </summary>
+    public EffinitiveAppBuilder MapWebSocket(string path, Func<WebSocketConnection, CancellationToken, Task> handler)
+    {
+        _router.AddWebSocketRoute(path, handler);
+        return this;
+    }
+
+    /// <summary>
+    /// Enable static file serving from the specified root directory.
+    /// Files are pre-loaded into memory at startup for zero per-request I/O.
+    /// </summary>
+    public EffinitiveAppBuilder UseStaticFiles(string rootPath, string requestPath = "/static", string? cacheControl = "public, max-age=3600")
+    {
+        _staticFileHandler = new StaticFileHandler(new StaticFileOptions
+        {
+            RootPath = rootPath,
+            RequestPath = requestPath,
+            CacheControl = cacheControl
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Enable static file serving with custom options.
+    /// </summary>
+    public EffinitiveAppBuilder UseStaticFiles(Action<StaticFileOptions> configure)
+    {
+        var options = new StaticFileOptions();
+        configure(options);
+        _staticFileHandler = new StaticFileHandler(options);
+        return this;
+    }
+
+    /// <summary>
     /// Map endpoints from specified assembly
     /// </summary>
     public EffinitiveAppBuilder MapEndpoints(Assembly assembly)
@@ -150,16 +202,10 @@ public sealed class EffinitiveAppBuilder
         // Auto-register endpoints from assembly if specified
         if (_endpointsAssembly != null)
         {
-            var endpointTypes = _endpointsAssembly.GetTypes()
+            foreach (var type in _endpointsAssembly.GetTypes()
                 .Where(t => !t.IsAbstract && !t.IsInterface)
-                .Where(t => t.GetInterfaces().Any(i =>
-                    i.IsGenericType &&
-                    (i.GetGenericTypeDefinition() == typeof(IEndpoint<,>) ||
-                     i.GetGenericTypeDefinition() == typeof(IAsyncEndpoint<,>))));
-
-            foreach (var type in endpointTypes)
+                .Where(t => typeof(IEndpoint).IsAssignableFrom(t)))
             {
-                // Register as transient (new instance per request)
                 _services.AddTransient(type, type);
             }
         }
@@ -167,13 +213,17 @@ public sealed class EffinitiveAppBuilder
         // Build service provider
         var serviceProvider = _services.BuildServiceProvider();
         
-        // Create middleware pipeline with DI support
-        var middlewarePipeline = new MiddlewarePipeline(serviceProvider);
-        
-        // Configure middleware
-        foreach (var configurator in _middlewareConfigurators)
+        // Create middleware pipeline only when middleware is configured.
+        MiddlewarePipeline? middlewarePipeline = null;
+        if (_middlewareConfigurators.Count > 0)
         {
-            configurator(middlewarePipeline);
+            middlewarePipeline = new MiddlewarePipeline(serviceProvider);
+
+            // Configure middleware
+            foreach (var configurator in _middlewareConfigurators)
+            {
+                configurator(middlewarePipeline);
+            }
         }
         
         // Register endpoints if assembly specified
@@ -186,11 +236,12 @@ public sealed class EffinitiveAppBuilder
         // Must be called after all AddRoute / AddEndpointType calls.
         _router.Freeze();
 
-        return new EffinitiveApp(_serverOptions, _router, serviceProvider, middlewarePipeline);
+        return new EffinitiveApp(_serverOptions, _router, serviceProvider, middlewarePipeline, _staticFileHandler);
     }
 
     private void RegisterEndpoints(Assembly assembly, IServiceProvider serviceProvider)
     {
+        // ── Generic endpoints: IEndpoint<TReq, TRes> and IAsyncEndpoint<TReq, TRes> ─────────────
         var endpointTypes = assembly.GetTypes()
             .Where(t => !t.IsAbstract && !t.IsInterface)
             .Where(t => t.GetInterfaces().Any(i =>
@@ -200,39 +251,20 @@ public sealed class EffinitiveAppBuilder
 
         foreach (var type in endpointTypes)
         {
-            // Get route and method from properties without creating instance
             var methodProp = type.GetProperty("Method", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
             var routeProp = type.GetProperty("Route", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
 
-            // These are protected abstract properties, so we need to check the base class for defaults
-            // or try to instantiate if there's a parameterless constructor
             string? method = null;
             string? route = null;
 
-            // Try to get from attributes or conventions first
-            // For now, we'll need to create a temporary instance with DI if possible
             object? tempInstance = null;
-            try
-            {
-                // Try to resolve from DI (will work if dependencies are registered)
-                tempInstance = serviceProvider.GetService(type);
-            }
-            catch
-            {
-                // Ignore - will try Activator next
-            }
+            try { tempInstance = serviceProvider.GetService(type); } catch { }
 
             if (tempInstance == null)
             {
-                try
-                {
-                    // Try parameterless constructor
-                    tempInstance = Activator.CreateInstance(type);
-                }
+                try { tempInstance = Activator.CreateInstance(type); }
                 catch
                 {
-                    // Skip this endpoint - can't get metadata without an instance
-                    // In production, you'd use attributes like [HttpGet("/api/route")]
                     Console.WriteLine($"Warning: Could not register endpoint {type.Name} - unable to create instance for metadata extraction");
                     continue;
                 }
@@ -248,14 +280,42 @@ public sealed class EffinitiveAppBuilder
                 continue;
             }
 
-            // Build compiled invoker once at startup — eliminates all per-request reflection.
-            // If Build() throws, the exception propagates out of EffinitiveAppBuilder.Build(),
-            // failing fast at startup so broken endpoints are caught before serving traffic.
             var invoker = EndpointInvoker.Build(type);
-
-            // Register endpoint type as metadata - will be resolved per-request with DI
             _router.AddEndpointType(method, route, type, invoker);
-            Console.WriteLine($"✅ Registered: {method.ToUpper().PadRight(6)} {route.PadRight(25)} -> {type.Name}");
+            Console.WriteLine($"✅ Registered: {method.ToUpper(),-6} {route,-25} -> {type.Name}");
+        }
+
+        // ── Non-generic IEndpoint implementations (SSE, custom execute-pattern endpoints) ───────
+        // These expose GetMethod()/GetRoute() and are invoked via ExecuteAsync(HttpRequest, ct).
+        var alreadyRegistered = endpointTypes.ToHashSet();
+        var specialEndpointTypes = assembly.GetTypes()
+            .Where(t => !t.IsAbstract && !t.IsInterface)
+            .Where(t => !alreadyRegistered.Contains(t))
+            .Where(t => typeof(IEndpoint).IsAssignableFrom(t))
+            .Where(t => t.GetMethod("GetMethod") != null && t.GetMethod("GetRoute") != null);
+
+        foreach (var type in specialEndpointTypes)
+        {
+            object? tempInstance = null;
+            try { tempInstance = serviceProvider.GetService(type); } catch { }
+            if (tempInstance == null)
+            {
+                try { tempInstance = Activator.CreateInstance(type); }
+                catch
+                {
+                    Console.WriteLine($"Warning: Could not register special endpoint {type.Name}");
+                    continue;
+                }
+            }
+
+            var getMethod = type.GetMethod("GetMethod");
+            var getRoute  = type.GetMethod("GetRoute");
+            var method = getMethod?.Invoke(tempInstance, null)?.ToString() ?? "GET";
+            var route  = getRoute?.Invoke(tempInstance, null)?.ToString() ?? "/";
+
+            // No compiled invoker — will fall through to ExecuteAsync slow path
+            _router.AddEndpointType(method, route, type, null);
+            Console.WriteLine($"✅ Registered: {method.ToUpper(),-6} {route,-25} -> {type.Name}");
         }
     }
 }
@@ -280,12 +340,12 @@ public sealed class EffinitiveApp : IDisposable
     /// </summary>
     public IServiceProvider? Services => _serviceProvider;
 
-    internal EffinitiveApp(ServerOptions options, Router router, IServiceProvider? serviceProvider = null, MiddlewarePipeline? middlewarePipeline = null)
+    internal EffinitiveApp(ServerOptions options, Router router, IServiceProvider? serviceProvider = null, MiddlewarePipeline? middlewarePipeline = null, StaticFileHandler? staticFileHandler = null)
     {
         _options = options;
         _serviceProvider = serviceProvider;
         _middlewarePipeline = middlewarePipeline;
-        _server = new EffinitiveServer(options, router, serviceProvider, middlewarePipeline);
+        _server = new EffinitiveServer(options, router, serviceProvider, middlewarePipeline, staticFileHandler);
     }
 
     /// <summary>

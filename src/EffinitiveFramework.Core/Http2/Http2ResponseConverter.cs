@@ -18,23 +18,29 @@ public static class Http2ResponseConverter
         };
         
         // Add regular headers
+        bool hasContentType = false;
         foreach (var (name, value) in response.Headers)
         {
             var lowerName = name.ToLowerInvariant();
-            
+
             // Skip connection-specific headers
-            if (lowerName == "connection" || 
-                lowerName == "keep-alive" || 
+            if (lowerName == "connection" ||
+                lowerName == "keep-alive" ||
                 lowerName == "proxy-connection" ||
                 lowerName == "transfer-encoding" ||
                 lowerName == "upgrade")
             {
                 continue;
             }
-            
+
+            if (lowerName == "content-type") hasContentType = true;
             headers.Add((lowerName, value));
         }
-        
+
+        // ContentType may be stored in a backing field not reflected in Headers dict
+        if (!hasContentType && !string.IsNullOrEmpty(response.ContentType))
+            headers.Add(("content-type", response.ContentType));
+
         return headers;
     }
 }

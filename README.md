@@ -4,7 +4,7 @@
 ![Tests](https://img.shields.io/github/actions/workflow/status/HBartosch/Effinitive/ci.yml?label=Tests&style=flat-square)
 [![NuGet](https://img.shields.io/nuget/v/EffinitiveFramework.Core)](https://www.nuget.org/packages/EffinitiveFramework.Core)
 [![NuGet](https://img.shields.io/nuget/dt/EffinitiveFramework.Core)](https://www.nuget.org/packages/EffinitiveFramework.Core)
-![.NET](https://img.shields.io/badge/.NET-8.0-blue?logo=dotnet&logoColor=white&style=flat-square)
+![.NET](https://img.shields.io/badge/.NET-8.0%20%7C%2010.0-blue?logo=dotnet&logoColor=white&style=flat-square)
 ![License](https://img.shields.io/github/license/HBartosch/Effinitive?style=flat-square)
 ![HTTP/2 Support](https://img.shields.io/badge/HTTP%2F2-supported-brightgreen?style=flat-square)
 ![HPACK Compression](https://img.shields.io/badge/HPACK-100%25%20RFC%207541-brightgreen?style=flat-square)
@@ -39,8 +39,13 @@ A high-performance C# web framework designed to outperform FastEndpoints and com
   - `NoRequestSseEndpointBase` - Simple streaming without request body
   - `SseEndpointBase<TRequest>` - Streaming with request parsing
   - `SseEndpointBase<TRequest, TEventData>` - Strongly-typed event streaming
+- **WebSocket support** (RFC 6455) - Full bidirectional messaging with `MapWebSocket()` or `WebSocketEndpointBase`
+- **Static file serving** - Zero per-request I/O via in-memory `FrozenDictionary` cache, 25+ MIME types
+- **Response compression** - Gzip middleware with single-pass serialize+compress pipeline
 - **Custom HTTP server** with direct socket handling for maximum performance
+- **High-performance transport layer** - `IOQueue`/`SocketSenderPool` architecture mirroring Kestrel's design
 - **HTTP/2 support** via ALPN negotiation with binary framing and HPACK compression
+- **HTTP/3 / QUIC** (experimental, .NET 10+) - RFC 9114 with QPACK compression, automatic alongside HTTPS
 - **HTTP/1.1 protocol** - Battle-tested and optimized for speed
 - **TLS/HTTPS support** with configurable certificates and modern protocol support
 - **Minimal allocations** in hot code paths
@@ -51,7 +56,8 @@ A high-performance C# web framework designed to outperform FastEndpoints and com
 - ✅ **HTTP/1.1** - Fully supported with custom parser (sub-50μs response times)
 - ✅ **HTTPS/TLS** - Full TLS 1.2/1.3 support with certificate configuration
 - ✅ **HTTP/2** - Complete implementation with binary framing, HPACK, stream multiplexing, and ALPN
-- ⏳ **HTTP/3/QUIC** - Under consideration
+- ✅ **HTTP/3/QUIC** - Experimental, .NET 10+ only (RFC 9114 with QPACK, automatic when `QuicListener.IsSupported`)
+- ✅ **WebSocket** - RFC 6455, full framing/fragmentation/ping-pong/close handshake
 
 ### HTTP/2 Implementation
 
@@ -64,6 +70,22 @@ EffinitiveFramework includes a **complete from-scratch HTTP/2 implementation**:
 - **Settings management** - Dynamic configuration via SETTINGS frames
 
 HTTP/2 is automatically enabled for HTTPS connections when clients negotiate it via ALPN. See [HTTP/2 Implementation Guide](docs/HTTP2_IMPLEMENTATION.md) for details.
+
+### HTTP/3 Implementation (.NET 10+)
+
+When targeting .NET 10 and TLS is configured, EffinitiveFramework starts a QUIC listener on the same HTTPS port:
+- **RFC 9114** - HTTP/3 framing (DATA, HEADERS, SETTINGS, GOAWAY)
+- **QPACK compression** (RFC 9204) - Header encoding/decoding with static table and encoder/decoder streams
+- **Control streams** - Bidirectional and unidirectional stream management
+- **Automatic** - No extra configuration required; QUIC starts when `QuicListener.IsSupported` is true
+
+### WebSocket Implementation (RFC 6455)
+
+- **Full frame support** - Text, Binary, Ping, Pong, Close, Continuation frames
+- **Fragmentation** - Multi-frame messages transparently reassembled
+- **Keep-alive** - Automatic Pong replies to client Ping frames
+- **Close handshake** - Graceful connection termination with status codes
+- **Fluent registration** - `MapWebSocket(path, handler)` or subclass `WebSocketEndpointBase`
 
 ## 🏗️ Architecture
 
@@ -104,7 +126,7 @@ public class HealthCheckEndpoint : NoRequestEndpointBase<HealthResponse>
         { 
             Status = "Healthy",
             Timestamp = DateTime.UtcNow,
-            Version = "1.1.0"
+            Version = "2.0.0"
         });
     }
 }
@@ -210,6 +232,40 @@ public record User
 
 > 💡 **See [Endpoint Selection Guide](docs/EndpointSelectionGuide.md) for detailed guidance on choosing between `EndpointBase` and `AsyncEndpointBase`**
 
+**For WebSocket connections (use `MapWebSocket` or subclass `WebSocketEndpointBase`):**
+
+```csharp
+using EffinitiveFramework.Core.WebSocket;
+
+// Inline handler
+app.MapWebSocket("/ws/echo", async (conn, ct) =>
+{
+    while (conn.IsOpen)
+    {
+        var msg = await conn.ReceiveAsync(ct);
+        if (msg == null) break;
+        await conn.SendAsync(msg.Value.Data, msg.Value.Type, ct);
+    }
+});
+
+// Class-based handler
+public class EchoEndpoint : WebSocketEndpointBase
+{
+    public override string Route => "/ws/echo";
+
+    public override async Task OnConnectedAsync(
+        WebSocketConnection connection, CancellationToken cancellationToken)
+    {
+        while (connection.IsOpen)
+        {
+            var msg = await connection.ReceiveAsync(cancellationToken);
+            if (msg == null) break;
+            await connection.SendAsync(msg.Value.Data, msg.Value.Type, cancellationToken);
+        }
+    }
+}
+```
+
 ### 2. Bootstrap the Application
 
 ```csharp
@@ -222,11 +278,21 @@ Console.CancelKeyPress += (s, e) => { e.Cancel = true; cts.Cancel(); };
 var app = EffinitiveApp
     .Create()
     .UsePort(5000)           // HTTP on port 5000
-    .UseHttpsPort(5001)      // HTTPS on port 5001 (HTTP/2 enabled via ALPN)
+    .UseHttpsPort(5001)      // HTTPS on port 5001 (HTTP/2 + HTTP/3 via ALPN/QUIC)
     .ConfigureTls(tls =>
     {
         tls.CertificatePath = "localhost.pfx";
         tls.CertificatePassword = "dev-password";
+    })
+    .UseResponseCompression()            // Enable gzip for supported clients
+    .UseStaticFiles("wwwroot")           // Serve files from ./wwwroot at /static
+    .MapWebSocket("/ws", async (conn, ct) =>   // WebSocket endpoint
+    {
+        while (conn.IsOpen)
+        {
+            var msg = await conn.ReceiveAsync(ct);
+            if (msg != null) await conn.SendAsync(msg.Value.Data, msg.Value.Type, ct);
+        }
     })
     .MapEndpoints() // Automatically discovers and registers all endpoints
     .Build();
@@ -311,19 +377,27 @@ The benchmark suite compares:
 EffinitiveFramework/
 ├── src/
 │   └── EffinitiveFramework.Core/       # Core framework library
-│       ├── EffinitiveApp.cs             # Main application class
-│       ├── Router.cs                    # High-performance router
-│       ├── EndpointBase.cs              # Base endpoint class
+│       ├── EffinitiveApp.cs             # Main application class + fluent builder
+│       ├── Router.cs                    # High-performance router (FrozenDictionary)
+│       ├── EndpointBase.cs              # Base endpoint classes
 │       ├── IEndpoint.cs                 # Endpoint interfaces
-│       └── HttpMethodAttribute.cs       # HTTP method attributes
+│       ├── Http/                        # HTTP/1.1 parsing and response writing
+│       ├── Http2/                       # HTTP/2 framing, HPACK, stream multiplexing
+│       ├── Http3/                       # HTTP/3 / QUIC + QPACK (.NET 10+ only)
+│       ├── WebSocket/                   # RFC 6455 WebSocket framing and endpoints
+│       ├── StaticFiles/                 # In-memory static file handler
+│       ├── Transport/                   # IOQueue, SocketSenderPool, DuplexPipe
+│       ├── Middleware/                  # Pipeline + ResponseCompressionMiddleware
+│       ├── Authentication/              # JWT, API Key, custom auth handlers
+│       ├── Authorization/               # [Authorize], [AllowAnonymous] attributes
+│       ├── DependencyInjection/         # ServiceCollection + ServiceProvider
+│       └── Configuration/              # ServerOptions, TlsOptions
 ├── samples/
 │   └── EffinitiveFramework.Sample/      # Sample API project
 │       ├── Program.cs                   # Application entry point
-│       └── Endpoints/
-│           └── UserEndpoints.cs         # Example endpoints
+│       └── Endpoints/                   # Example endpoints
 ├── benchmarks/
-│   └── EffinitiveFramework.Benchmarks/  # Performance benchmarks
-│       └── Program.cs                   # BenchmarkDotNet tests
+│   └── EffinitiveFramework.Benchmarks/  # Performance benchmarks (BenchmarkDotNet)
 └── tests/
     └── EffinitiveFramework.Tests/       # Unit tests
 ```
@@ -332,7 +406,7 @@ EffinitiveFramework/
 
 ### Prerequisites
 
-- .NET 8 SDK or later
+- .NET 8 SDK or later (.NET 10 SDK for HTTP/3 support)
 - Visual Studio 2022 / VS Code / Rider
 
 ### Build
@@ -370,6 +444,19 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - **Struct Types** - Value types for small, frequently-used data
 - **Unsafe Code** - Low-level optimizations where beneficial
 
+## 🆕 What's New in v2.0.0
+
+| Feature | Details |
+|---|---|
+| WebSocket | RFC 6455 — `MapWebSocket()` or `WebSocketEndpointBase`. Fragmentation, ping/pong, close handshake. |
+| HTTP/3 / QUIC | RFC 9114 + QPACK (RFC 9204). Auto-starts on .NET 10 alongside HTTPS. |
+| Static files | Pre-loads `wwwroot` into `FrozenDictionary` at startup — zero per-request I/O. |
+| Gzip compression | `UseResponseCompression()` — single-pass serialize+compress via pooled buffers. |
+| Transport layer | `IOQueue`/`SocketSenderPool` matching Kestrel's architecture for maximum throughput. |
+| Dual-target package | Ships `net8.0` + `net10.0` targets in a single NuGet package. |
+
+See [RELEASE_NOTES_v2.0.0.md](RELEASE_NOTES_v2.0.0.md) for the full release notes and [CHANGELOG.md](CHANGELOG.md) for the complete version history.
+
 ## 📊 Comparison with FastEndpoints
 
 | Feature | EffinitiveFramework | FastEndpoints |
@@ -389,12 +476,13 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - [x] ~~Middleware pipeline~~ ✅ **IMPLEMENTED** (High-performance pipeline)
 - [x] ~~Dependency injection integration~~ ✅ **IMPLEMENTED** (Full DI support)
 - [x] ~~Server-Sent Events (SSE)~~ ✅ **IMPLEMENTED v1.1.0** (Real-time streaming)
+- [x] ~~Response compression (gzip)~~ ✅ **IMPLEMENTED v2.0.0** (Single-pass serialize+compress)
+- [x] ~~WebSocket support~~ ✅ **IMPLEMENTED v2.0.0** (RFC 6455, full framing)
+- [x] ~~Static file serving~~ ✅ **IMPLEMENTED v2.0.0** (Zero per-request I/O)
+- [x] ~~HTTP/3 / QUIC protocol~~ ✅ **IMPLEMENTED v2.0.0** (Experimental, .NET 10+)
 - [ ] Response caching
 - [ ] OpenAPI/Swagger integration
-- [ ] Response compression (gzip, br, deflate)
 - [ ] Rate limiting
-- [ ] WebSocket support
-- [ ] HTTP/3 / QUIC protocol
 
 ## 🤝 Contributing
 

@@ -16,7 +16,10 @@ public class HpackEncoder
     }
     
     /// <summary>
-    /// Encode headers using HPACK compression
+    /// Encode headers using HPACK compression.
+    /// This method is thread-safe: it only uses the static table and "Literal
+    /// Header Field without Indexing" for unknown headers, so no mutable state
+    /// (dynamic table) is touched during encoding.
     /// </summary>
     public byte[] EncodeHeaders(List<(string name, string value)> headers)
     {
@@ -28,7 +31,7 @@ public class HpackEncoder
             
             if (staticIndex > 0)
             {
-                // Indexed header field representation
+                // Indexed header field representation (static table hit — fully indexed)
                 EncodeInteger(buffer, staticIndex, 7, 0x80);
             }
             else
@@ -37,20 +40,20 @@ public class HpackEncoder
                 
                 if (nameIndex > 0)
                 {
-                    // Literal header field with incremental indexing - indexed name
-                    EncodeInteger(buffer, nameIndex, 6, 0x40);
+                    // Literal header field without indexing — indexed name
+                    // Prefix 0x00 = "without indexing", does NOT modify dynamic table
+                    EncodeInteger(buffer, nameIndex, 4, 0x00);
                     EncodeString(buffer, value, huffman: false);
                 }
                 else
                 {
-                    // Literal header field with incremental indexing - new name
-                    buffer.GetSpan(1)[0] = 0x40;
+                    // Literal header field without indexing — new name
+                    buffer.GetSpan(1)[0] = 0x00;
                     buffer.Advance(1);
                     EncodeString(buffer, name, huffman: false);
                     EncodeString(buffer, value, huffman: false);
                 }
-                
-                _dynamicTable.Add(name, value);
+                // No _dynamicTable.Add() — keeps encoder stateless and thread-safe
             }
         }
         

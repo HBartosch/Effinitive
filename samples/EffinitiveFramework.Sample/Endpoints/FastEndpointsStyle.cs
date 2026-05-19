@@ -30,9 +30,9 @@ public class HomePostEndpoint : NoRequestEndpointBase<string>
     public override ValueTask<string> HandleAsync(CancellationToken cancellationToken = default)
     {
         var body = HttpContext?.Body;
-        if (body != null && body.Length > 0)
+        if (body.HasValue && !body.Value.IsEmpty)
         {
-            return ValueTask.FromResult(System.Text.Encoding.UTF8.GetString(body));
+            return ValueTask.FromResult(System.Text.Encoding.UTF8.GetString(body.Value.Span));
         }
         return ValueTask.FromResult(string.Empty);
     }

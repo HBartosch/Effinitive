@@ -38,12 +38,12 @@ public static class Http2Constants
     // Default settings values
     public const uint DefaultHeaderTableSize = 4096;
     public const uint DefaultEnablePush = 1; // RFC 7540 §6.5.2: Server push enabled by default (client can disable via SETTINGS)
-    public const uint DefaultMaxConcurrentStreams = 100;
+    public const uint DefaultMaxConcurrentStreams = 256;
     public const int DefaultMaxPushedStreams = 10;
     public const int DefaultMaxPushedResourceSize = 1024 * 1024; // 1MB
-    public const uint DefaultInitialWindowSize = 65535;
+    public const uint DefaultInitialWindowSize = 1048576; // 1MB — larger window for better throughput
     public const uint DefaultMaxFrameSize = 16384;
-    public const uint DefaultMaxHeaderListSize = 8192;
+    public const uint DefaultMaxHeaderListSize = 65536; // 64KB — allow large header lists
     
     // Error codes
     public const uint ErrorNoError = 0x00;

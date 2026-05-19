@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 
 namespace EffinitiveFramework.Core.DependencyInjection;
@@ -11,11 +12,14 @@ public sealed class ServiceProvider : IServiceProvider, IDisposable
     private readonly IReadOnlyList<ServiceDescriptor> _descriptors;
     private readonly ConcurrentDictionary<Type, object> _singletons = new();
     private readonly ConcurrentDictionary<Type, ServiceDescriptor> _descriptorCache = new();
+    private static readonly ConcurrentDictionary<Type, Func<IServiceProvider, object>> ActivatorCache = new();
+    private readonly bool _hasScopedRegistrations;
     private bool _disposed;
 
     internal ServiceProvider(IReadOnlyList<ServiceDescriptor> descriptors)
     {
         _descriptors = descriptors;
+        _hasScopedRegistrations = descriptors.Any(d => d.Lifetime == ServiceLifetime.Scoped);
         
         // Pre-cache descriptors for fast lookup
         foreach (var descriptor in descriptors)
@@ -29,6 +33,13 @@ public sealed class ServiceProvider : IServiceProvider, IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// True when the container has at least one scoped registration.
+    /// Request pipelines can use this to skip creating a scope on every request
+    /// when only transient/singleton services are registered.
+    /// </summary>
+    public bool HasScopedRegistrations => _hasScopedRegistrations;
 
     /// <summary>
     /// Get a service instance (fast path with aggressive inlining)
@@ -96,27 +107,37 @@ public sealed class ServiceProvider : IServiceProvider, IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private object CreateInstanceFromType(Type implementationType)
     {
-        // Try to find constructor with most parameters (constructor injection)
-        var constructors = implementationType.GetConstructors();
-        
-        if (constructors.Length == 0)
-            return Activator.CreateInstance(implementationType)!;
+        return CreateInstance(this, implementationType);
+    }
 
-        // Use the first constructor (or add more sophisticated logic)
+    internal static object CreateInstance(IServiceProvider provider, Type implementationType)
+    {
+        var activator = ActivatorCache.GetOrAdd(implementationType, BuildActivator);
+        return activator(provider);
+    }
+
+    private static Func<IServiceProvider, object> BuildActivator(Type implementationType)
+    {
+        var constructors = implementationType.GetConstructors();
+        if (constructors.Length == 0)
+            return _ => Activator.CreateInstance(implementationType)!;
+
         var constructor = constructors[0];
         var parameters = constructor.GetParameters();
+        var providerParam = Expression.Parameter(typeof(IServiceProvider), "provider");
+        var getServiceMethod = typeof(IServiceProvider).GetMethod(nameof(IServiceProvider.GetService))!;
 
-        if (parameters.Length == 0)
-            return Activator.CreateInstance(implementationType)!;
-
-        // Resolve constructor parameters
-        var args = new object?[parameters.Length];
+        var args = new Expression[parameters.Length];
         for (int i = 0; i < parameters.Length; i++)
         {
-            args[i] = GetService(parameters[i].ParameterType);
+            var serviceTypeExpr = Expression.Constant(parameters[i].ParameterType, typeof(Type));
+            var resolveCall = Expression.Call(providerParam, getServiceMethod, serviceTypeExpr);
+            args[i] = Expression.Convert(resolveCall, parameters[i].ParameterType);
         }
 
-        return constructor.Invoke(args);
+        var newExpr = Expression.New(constructor, args);
+        var body = Expression.Convert(newExpr, typeof(object));
+        return Expression.Lambda<Func<IServiceProvider, object>>(body, providerParam).Compile();
     }
 
     public void Dispose()
@@ -156,14 +177,16 @@ internal sealed class ServiceScope : IServiceScope
     private readonly ServiceProvider _rootProvider;
     private readonly ConcurrentDictionary<Type, object> _scopedInstances = new();
     private readonly IReadOnlyList<ServiceDescriptor> _descriptors;
+    private readonly ScopedServiceProvider _scopedProvider;
     private bool _disposed;
 
-    public IServiceProvider ServiceProvider => new ScopedServiceProvider(this);
+    public IServiceProvider ServiceProvider => _scopedProvider;
 
     internal ServiceScope(ServiceProvider rootProvider, IReadOnlyList<ServiceDescriptor> descriptors)
     {
         _rootProvider = rootProvider;
         _descriptors = descriptors;
+        _scopedProvider = new ScopedServiceProvider(this);
     }
 
     internal object? GetService(Type serviceType)
@@ -210,23 +233,7 @@ internal sealed class ServiceScope : IServiceScope
 
     private object CreateInstanceFromType(Type implementationType)
     {
-        var constructors = implementationType.GetConstructors();
-        if (constructors.Length == 0)
-            return Activator.CreateInstance(implementationType)!;
-
-        var constructor = constructors[0];
-        var parameters = constructor.GetParameters();
-
-        if (parameters.Length == 0)
-            return Activator.CreateInstance(implementationType)!;
-
-        var args = new object?[parameters.Length];
-        for (int i = 0; i < parameters.Length; i++)
-        {
-            args[i] = GetService(parameters[i].ParameterType);
-        }
-
-        return constructor.Invoke(args);
+        return global::EffinitiveFramework.Core.DependencyInjection.ServiceProvider.CreateInstance(this.ServiceProvider, implementationType);
     }
 
     public void Dispose()

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using EffinitiveFramework.Core.DependencyInjection;
 using EffinitiveFramework.Core.Http;
 
 namespace EffinitiveFramework.Core;
@@ -31,6 +32,21 @@ public sealed partial class EffinitiveServer
             response.StatusCode = 204;
             response.Headers["Allow"] = "GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS";
             response.Body = Array.Empty<byte>();
+            return;
+        }
+
+        // Static file fast-path: serve cached files before any routing or middleware
+        if (_staticFileHandler != null &&
+            request.Method is "GET" or "HEAD" &&
+            _staticFileHandler.TryServe(request.Path.AsSpan(), response))
+        {
+            if (request.Method == "HEAD")
+            {
+                // RFC 9110 §9.3.2: HEAD response MUST include the same headers as GET,
+                // including Content-Length reflecting the body that would have been sent.
+                response.Headers["Content-Length"] = (response.Body?.Length ?? 0).ToString();
+                response.Body = null;
+            }
             return;
         }
 
@@ -106,8 +122,8 @@ public sealed partial class EffinitiveServer
 
         var routeValue = route.Value;
 
-        // Store endpoint type in request items for middleware
-        if (routeValue.EndpointType != null)
+        // Store endpoint type metadata only when middleware is active.
+        if (_middlewarePipeline != null && routeValue.EndpointType != null)
         {
             request.Items ??= new Dictionary<string, object>();
             request.Items["EndpointType"] = routeValue.EndpointType;
@@ -126,25 +142,31 @@ public sealed partial class EffinitiveServer
                 // Copy middleware response to the response parameter
                 response.StatusCode = middlewareResponse.StatusCode;
                 response.Body = middlewareResponse.Body;
+                response.BodyObject = middlewareResponse.BodyObject;
+                response.BodySerializerOptions = middlewareResponse.BodySerializerOptions;
+                response.GzipCompressionLevel = middlewareResponse.GzipCompressionLevel;
                 response.ContentType = middlewareResponse.ContentType;
-                foreach (var header in middlewareResponse.Headers)
+                response.StreamHandler = middlewareResponse.StreamHandler;
+                var middlewareHeaders = middlewareResponse.HeadersOrNull;
+                if (middlewareHeaders != null)
                 {
-                    response.Headers[header.Key] = header.Value;
+                    foreach (var header in middlewareHeaders)
+                    {
+                        response.Headers[header.Key] = header.Value;
+                    }
                 }
                 return;
             }
 
             if (!_isProduction)
                 Console.WriteLine($"[Server] No middleware - executing endpoint directly");
-            // No middleware - execute endpoint directly
-            var directResponse = await ExecuteEndpointAsync(request, routeValue, cancellationToken);
-            response.StatusCode = directResponse.StatusCode;
-            response.Body = directResponse.Body;
-            response.ContentType = directResponse.ContentType;
-            foreach (var header in directResponse.Headers)
-            {
-                response.Headers[header.Key] = header.Value;
-            }
+
+            // No middleware/no-route-params direct invoke fast path.
+            if (await TryExecuteEndpointDirectFastPathAsync(request, routeValue, response, cancellationToken))
+                return;
+
+            // No middleware - write endpoint result directly into the caller response.
+            await ExecuteEndpointAsync(request, routeValue, cancellationToken, response);
         }
         catch (Exception ex)
         {
@@ -164,17 +186,99 @@ public sealed partial class EffinitiveServer
         }
     }
 
-    private async ValueTask<HttpResponse> ExecuteEndpointAsync(HttpRequest request, RouteMatch route, CancellationToken cancellationToken)
+    private async ValueTask<bool> TryExecuteEndpointDirectFastPathAsync(
+        HttpRequest request,
+        RouteMatch route,
+        HttpResponse response,
+        CancellationToken cancellationToken)
     {
-        var response = new HttpResponse();
+        if (_middlewarePipeline != null)
+            return false;
+        if (route.EndpointType == null || route.Invoker == null)
+            return false;
+        if (route.Parameters != null && route.Parameters.Count > 0)
+            return false;
+
+        var invoker = route.Invoker;
+        IServiceScope? scope = null;
+        IServiceProvider scopedProvider = _serviceProvider ?? new NoOpServiceProvider();
+
+        if (_serviceProvider is ServiceProvider sp && sp.HasScopedRegistrations)
+        {
+            scope = sp.CreateScope();
+            scopedProvider = scope.ServiceProvider;
+        }
+
+        try
+        {
+            response.Reset();
+
+            var endpoint = scopedProvider.GetService(route.EndpointType);
+            if (endpoint == null)
+            {
+                response.StatusCode = 500;
+                var pd = ProblemDetails.ForStatusCode(500, $"Failed to resolve endpoint {route.EndpointType.Name}");
+                response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
+                response.ContentType = "application/problem+json";
+                return true;
+            }
+
+            invoker.SetHttpContext(endpoint, request);
+
+            object? requestObj = null;
+            if (!invoker.IsNoRequest)
+            {
+                if (request.ContentLength > 0 && request.Body.Length > 0 && invoker.RequestType != typeof(EmptyRequest))
+                {
+                    try
+                    {
+                        requestObj = JsonSerializer.Deserialize(request.Body.Span, invoker.RequestType, _options.JsonOptions);
+                    }
+                    catch (Exception ex)
+                    {
+                        response.StatusCode = 400;
+                        var pd = ProblemDetails.FromException(ex);
+                        pd.Title = "Bad Request";
+                        pd.Status = 400;
+                        response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
+                        response.ContentType = "application/problem+json";
+                        return true;
+                    }
+                }
+                else
+                {
+                    requestObj = Activator.CreateInstance(invoker.RequestType);
+                }
+            }
+
+            var responseObj = await invoker.InvokeAsync(endpoint, requestObj, cancellationToken);
+            var contentType = invoker.GetContentType(endpoint) ?? "application/json";
+            SerializeResponse(response, responseObj, contentType);
+            return true;
+        }
+        finally
+        {
+            scope?.Dispose();
+        }
+    }
+
+    private async ValueTask<HttpResponse> ExecuteEndpointAsync(
+        HttpRequest request,
+        RouteMatch route,
+        CancellationToken cancellationToken,
+        HttpResponse? targetResponse = null)
+    {
+        var response = targetResponse ?? new HttpResponse();
+        if (targetResponse != null)
+            response.Reset();
 
         try
         {
             // Create a scope for this request if DI is enabled
-            DependencyInjection.IServiceScope? scope = null;
+            IServiceScope? scope = null;
             IServiceProvider scopedProvider = _serviceProvider ?? new NoOpServiceProvider();
-            
-            if (_serviceProvider is DependencyInjection.ServiceProvider sp)
+
+            if (_serviceProvider is ServiceProvider sp && sp.HasScopedRegistrations)
             {
                 scope = sp.CreateScope();
                 scopedProvider = scope.ServiceProvider;
@@ -204,8 +308,11 @@ public sealed partial class EffinitiveServer
                     if (route.Parameters != null && route.Parameters.Count > 0)
                     {
                         request.RouteValues = route.Parameters;
-                        request.Items ??= new Dictionary<string, object>();
-                        request.Items["RouteParameters"] = route.Parameters;
+                        if (_middlewarePipeline != null)
+                        {
+                            request.Items ??= new Dictionary<string, object>();
+                            request.Items["RouteParameters"] = route.Parameters;
+                        }
                     }
 
                     // Set HttpContext — compiled delegate, no reflection
@@ -213,12 +320,16 @@ public sealed partial class EffinitiveServer
 
                     // Deserialize request body
                     object? requestObj = null;
-                    if (request.ContentLength > 0 && request.Body.Length > 0 &&
-                        invoker.RequestType != typeof(EmptyRequest))
+                    if (invoker.IsNoRequest)
+                    {
+                        requestObj = null;
+                    }
+                    else if (request.ContentLength > 0 && request.Body.Length > 0 &&
+                             invoker.RequestType != typeof(EmptyRequest))
                     {
                         try
                         {
-                            requestObj = JsonSerializer.Deserialize(request.Body, invoker.RequestType, _options.JsonOptions);
+                            requestObj = JsonSerializer.Deserialize(request.Body.Span, invoker.RequestType, _options.JsonOptions);
                         }
                         catch (Exception ex)
                         {
@@ -268,7 +379,7 @@ public sealed partial class EffinitiveServer
                 // ---------------------------------------------------------------
                 // Slow path: endpoint type without compiled invoker, or legacy handler
                 // ---------------------------------------------------------------
-                return await ExecuteEndpointSlowPathAsync(request, route, scopedProvider, cancellationToken);
+                return await ExecuteEndpointSlowPathAsync(request, route, scopedProvider, cancellationToken, response);
             }
             finally
             {
@@ -289,7 +400,7 @@ public sealed partial class EffinitiveServer
                     Console.WriteLine($"   InnerException: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
                 }
             }
-            
+
             response.StatusCode = 500;
             var problemDetails = ProblemDetails.FromException(ex);
             response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
@@ -300,9 +411,15 @@ public sealed partial class EffinitiveServer
     }
 
     private async ValueTask<HttpResponse> ExecuteEndpointSlowPathAsync(
-        HttpRequest request, RouteMatch route, IServiceProvider scopedProvider, CancellationToken cancellationToken)
+        HttpRequest request,
+        RouteMatch route,
+        IServiceProvider scopedProvider,
+        CancellationToken cancellationToken,
+        HttpResponse? targetResponse = null)
     {
-        var response = new HttpResponse();
+        var response = targetResponse ?? new HttpResponse();
+        if (targetResponse != null)
+            response.Reset();
 
         object? endpoint = null;
         Delegate? handler = null;
@@ -325,8 +442,32 @@ public sealed partial class EffinitiveServer
             handleMethod = route.EndpointType.GetMethod("HandleAsync",
                 System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
 
+            // SSE and other non-generic endpoints expose ExecuteAsync(HttpRequest, CancellationToken)
+            // rather than HandleAsync. Detect and dispatch them directly.
             if (handleMethod == null)
             {
+                var executeMethod = route.EndpointType.GetMethod("ExecuteAsync",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (executeMethod != null)
+                {
+                    var executeResult = executeMethod.Invoke(endpoint, new object[] { request, cancellationToken });
+                    if (executeResult is Task<HttpResponse> executeTask)
+                    {
+                        var sseResponse = await executeTask;
+                        response.StatusCode = sseResponse.StatusCode;
+                        response.Body = sseResponse.Body;
+                        response.BodyObject = sseResponse.BodyObject;
+                        response.ContentType = sseResponse.ContentType;
+                        response.StreamHandler = sseResponse.StreamHandler;
+                        response.KeepAlive = sseResponse.KeepAlive;
+                        var sseHeaders = sseResponse.HeadersOrNull;
+                        if (sseHeaders != null)
+                            foreach (var h in sseHeaders)
+                                response.Headers[h.Key] = h.Value;
+                    }
+                    return response;
+                }
+
                 response.StatusCode = 500;
                 var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not have public HandleAsync method");
                 response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
@@ -392,11 +533,10 @@ public sealed partial class EffinitiveServer
         {
             try
             {
-                requestObj = JsonSerializer.Deserialize(request.Body, requestType, _options.JsonOptions);
+                requestObj = JsonSerializer.Deserialize(request.Body.Span, requestType, _options.JsonOptions);
             }
             catch (Exception ex)
             {
-                response.StatusCode = 400;
                 var problemDetails = ProblemDetails.FromException(ex);
                 problemDetails.Title = "Bad Request";
                 problemDetails.Status = 400;
@@ -436,8 +576,11 @@ public sealed partial class EffinitiveServer
             if (route.Parameters != null && route.Parameters.Count > 0)
             {
                 request.RouteValues = route.Parameters;
-                request.Items ??= new Dictionary<string, object>();
-                request.Items["RouteParameters"] = route.Parameters;
+                if (_middlewarePipeline != null)
+                {
+                    request.Items ??= new Dictionary<string, object>();
+                    request.Items["RouteParameters"] = route.Parameters;
+                }
             }
 
             var httpContextProperty = route.EndpointType?.GetProperty("HttpContext");
