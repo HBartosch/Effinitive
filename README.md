@@ -11,13 +11,6 @@
 
 A high-performance C# web framework designed to outperform FastEndpoints and compete with GenHTTP.
 
-**✅ Mission Accomplished:**
-- **1.11x faster than GenHTTP** - Beating another custom HTTP server framework (46.5μs vs 51.7μs)
-- **16x faster than FastEndpoints** - Delivering on the performance promise (46.5μs vs 739μs)
-- **16x faster than ASP.NET Core** - Outperforming Microsoft's Minimal API (46.5μs vs 722μs)
-- **Sub-50μs response times** - The fastest C# web framework tested
-- **6KB allocations** - Minimal memory footprint per request
-
 ## 🚀 Performance Goals
 
 - **Zero-allocation routing** using `Span<T>` and `Memory<T>`
