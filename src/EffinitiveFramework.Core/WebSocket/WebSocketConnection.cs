@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.IO.Pipelines;
 using System.Security.Cryptography;
 using System.Text;
@@ -8,17 +9,20 @@ namespace EffinitiveFramework.Core.WebSocket;
 /// <summary>
 /// Represents a WebSocket connection that has been upgraded from HTTP/1.1.
 /// Implements RFC 6455 frame read/write, ping/pong, and close handshake.
+/// Zero per-message allocations: _messageBuffer is reused across ReceiveAsync calls,
+/// and frame payloads are copied directly into it without an intermediate byte[].
 /// </summary>
 public sealed class WebSocketConnection : IAsyncDisposable
 {
-    private static readonly byte[] WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"u8.ToArray();
-
     private readonly Stream _stream;
     private readonly PipeReader _reader;
     private readonly PipeWriter _writer;
-    private readonly byte[] _writeBuffer;
+    private readonly ArrayBufferWriter<byte> _messageBuffer;
     private bool _closeSent;
     private bool _closeReceived;
+    // Set by ReceiveAsync when more frames remain in the pipe buffer after returning a message.
+    // SendAsync uses this to defer FlushAsync, batching multiple responses into one syscall.
+    private bool _hasPendingData;
 
     /// <summary>
     /// Whether the WebSocket connection is still open.
@@ -28,9 +32,9 @@ public sealed class WebSocketConnection : IAsyncDisposable
     internal WebSocketConnection(Stream stream)
     {
         _stream = stream;
-        _reader = PipeReader.Create(stream, new StreamPipeReaderOptions(bufferSize: 4096, leaveOpen: true));
-        _writer = PipeWriter.Create(stream, new StreamPipeWriterOptions(minimumBufferSize: 4096, leaveOpen: true));
-        _writeBuffer = new byte[WebSocketFrame.MaxFrameSize(65536)]; // Reusable write buffer
+        _reader = PipeReader.Create(stream, new StreamPipeReaderOptions(bufferSize: 65536, leaveOpen: true));
+        _writer = PipeWriter.Create(stream, new StreamPipeWriterOptions(minimumBufferSize: 65536, leaveOpen: true));
+        _messageBuffer = new ArrayBufferWriter<byte>(65536);
     }
 
     /// <summary>
@@ -50,93 +54,104 @@ public sealed class WebSocketConnection : IAsyncDisposable
     /// </summary>
     public async ValueTask<WebSocketMessage?> ReceiveAsync(CancellationToken cancellationToken = default)
     {
+        _messageBuffer.ResetWrittenCount(); // Reuse existing allocation — no heap object per call.
         WebSocketOpcode messageOpcode = default;
-        var messageBuffer = new ArrayBufferWriter<byte>();
         bool firstFrame = true;
+        bool gotMessage = false;
 
-        while (true)
+        while (!gotMessage)
         {
             var result = await _reader.ReadAsync(cancellationToken);
-            var buffer = result.Buffer;
+            if (result.IsCanceled) throw new OperationCanceledException(cancellationToken);
 
-            while (WebSocketFrame.TryParse(buffer, out var frame, out var consumed))
+            var buffer = result.Buffer;
+            SequencePosition consumed = buffer.Start;
+
+            while (WebSocketFrame.TryParseHeader(buffer, out var header, out var headerConsumed))
             {
+                var afterHeader = buffer.Slice(headerConsumed);
+                if (afterHeader.Length < header.PayloadLength) break; // wait for rest of payload
+
+                var payloadSeq = afterHeader.Slice(0, header.PayloadLength);
+                consumed = afterHeader.GetPosition(header.PayloadLength);
                 buffer = buffer.Slice(consumed);
 
-                // Handle control frames inline
-                if (frame.IsControl)
+                if (header.IsControl)
                 {
-                    switch (frame.Opcode)
+                    // RFC 6455 §5.5: control frames MUST have payload ≤ 125 bytes and FIN=1.
+                    if (header.PayloadLength > 125 || !header.Fin)
+                    {
+                        _reader.AdvanceTo(consumed);
+                        await SendCloseAsync(1002, "protocol error", cancellationToken);
+                        return null;
+                    }
+                    Span<byte> ctrlPayload = stackalloc byte[header.PayloadLength];
+                    payloadSeq.CopyTo(ctrlPayload);
+                    if (header.Masked) WebSocketFrame.ApplyMask(ctrlPayload, header.MaskKey);
+
+                    switch (header.Opcode)
                     {
                         case WebSocketOpcode.Ping:
-                            await SendPongAsync(frame.Payload, cancellationToken);
-                            continue;
-
-                        case WebSocketOpcode.Pong:
-                            // Unsolicited pong — ignore per RFC 6455 §5.5.3
-                            continue;
-
+                            WriteFrameHeader(_writer, WebSocketOpcode.Pong, ctrlPayload.Length);
+                            _writer.Write(ctrlPayload); // sync — no await, span safe before FlushAsync
+                            await _writer.FlushAsync(cancellationToken);
+                            break;
                         case WebSocketOpcode.Close:
                             _closeReceived = true;
-                            if (!_closeSent)
-                            {
-                                // Echo close frame back
-                                await SendCloseAsync(1000, null, cancellationToken);
-                            }
                             _reader.AdvanceTo(consumed);
+                            if (!_closeSent)
+                                await SendCloseAsync(1000, null, cancellationToken);
                             return null;
+                        // Pong: RFC 6455 §5.5.3 — ignore unsolicited pong
                     }
+                    continue;
                 }
 
-                // Data frame
-                if (firstFrame)
-                {
-                    messageOpcode = frame.Opcode;
-                    firstFrame = false;
-                }
+                // Data frame: copy payload directly into reusable message buffer, then unmask.
+                if (firstFrame) { messageOpcode = header.Opcode; firstFrame = false; }
 
-                messageBuffer.Write(frame.Payload.Span);
+                var dest = _messageBuffer.GetSpan(header.PayloadLength);
+                payloadSeq.CopyTo(dest);
+                if (header.Masked) WebSocketFrame.ApplyMask(dest.Slice(0, header.PayloadLength), header.MaskKey);
+                _messageBuffer.Advance(header.PayloadLength);
 
-                if (frame.Fin)
+                if (header.Fin)
                 {
-                    _reader.AdvanceTo(consumed);
-                    return new WebSocketMessage(
-                        messageOpcode == WebSocketOpcode.Text
-                            ? WebSocketMessageType.Text
-                            : WebSocketMessageType.Binary,
-                        messageBuffer.WrittenMemory);
+                    // Track whether more frames are already buffered so SendAsync can defer its flush.
+                    _hasPendingData = buffer.Length > 0;
+                    gotMessage = true;
+                    break;
                 }
             }
 
-            _reader.AdvanceTo(buffer.Start, buffer.End);
-
-            if (result.IsCompleted)
-                return null; // Connection closed without close frame
+            // AdvanceTo(consumed) tells the pipe "everything up to consumed is done; give me the rest
+            // immediately." AdvanceTo(consumed, buffer.End) tells it to wait for NEW data past buffer.End.
+            if (gotMessage)
+                _reader.AdvanceTo(consumed);
+            else
+            {
+                _reader.AdvanceTo(consumed, buffer.End);
+                if (result.IsCompleted) return null;
+            }
         }
+
+        return new WebSocketMessage(
+            messageOpcode == WebSocketOpcode.Text ? WebSocketMessageType.Text : WebSocketMessageType.Binary,
+            _messageBuffer.WrittenMemory);
     }
 
     /// <summary>
     /// Send a message to the client.
+    /// When more client frames are already buffered (_hasPendingData), defers FlushAsync so that
+    /// a batch of responses can be written and flushed in a single syscall.
     /// </summary>
     public async ValueTask SendAsync(ReadOnlyMemory<byte> data, WebSocketMessageType type, CancellationToken cancellationToken = default)
     {
         var opcode = type == WebSocketMessageType.Text ? WebSocketOpcode.Text : WebSocketOpcode.Binary;
-
-        // For small messages, use the pre-allocated buffer
-        if (data.Length <= 65536)
-        {
-            var frameSize = WebSocketFrame.WriteFrame(_writeBuffer, opcode, data.Span);
-            _writer.Write(_writeBuffer.AsSpan(0, frameSize));
+        WriteFrameHeader(_writer, opcode, data.Length);
+        _writer.Write(data.Span);
+        if (!_hasPendingData)
             await _writer.FlushAsync(cancellationToken);
-        }
-        else
-        {
-            // Large messages: allocate
-            var buf = new byte[WebSocketFrame.MaxFrameSize(data.Length)];
-            var frameSize = WebSocketFrame.WriteFrame(buf, opcode, data.Span);
-            _writer.Write(buf.AsSpan(0, frameSize));
-            await _writer.FlushAsync(cancellationToken);
-        }
     }
 
     /// <summary>
@@ -144,28 +159,19 @@ public sealed class WebSocketConnection : IAsyncDisposable
     /// </summary>
     public async ValueTask SendCloseAsync(ushort statusCode, string? reason, CancellationToken cancellationToken = default)
     {
-        if (_closeSent)
-            return;
-
+        if (_closeSent) return;
         _closeSent = true;
 
-        // Build close payload: 2 bytes status + optional UTF-8 reason
         var reasonBytes = reason != null ? Encoding.UTF8.GetBytes(reason) : Array.Empty<byte>();
-        var payload = new byte[2 + reasonBytes.Length];
-        payload[0] = (byte)(statusCode >> 8);
-        payload[1] = (byte)statusCode;
-        if (reasonBytes.Length > 0)
-            reasonBytes.CopyTo(payload, 2);
+        int payloadLength = 2 + reasonBytes.Length;
 
-        var frameSize = WebSocketFrame.WriteFrame(_writeBuffer, WebSocketOpcode.Close, payload);
-        _writer.Write(_writeBuffer.AsSpan(0, frameSize));
-        await _writer.FlushAsync(cancellationToken);
-    }
+        WriteFrameHeader(_writer, WebSocketOpcode.Close, payloadLength);
+        var closeSpan = _writer.GetSpan(payloadLength);
+        closeSpan[0] = (byte)(statusCode >> 8);
+        closeSpan[1] = (byte)statusCode;
+        if (reasonBytes.Length > 0) reasonBytes.CopyTo(closeSpan.Slice(2));
+        _writer.Advance(payloadLength);
 
-    private async ValueTask SendPongAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
-    {
-        var frameSize = WebSocketFrame.WriteFrame(_writeBuffer, WebSocketOpcode.Pong, payload.Span);
-        _writer.Write(_writeBuffer.AsSpan(0, frameSize));
         await _writer.FlushAsync(cancellationToken);
     }
 
@@ -180,6 +186,31 @@ public sealed class WebSocketConnection : IAsyncDisposable
         await _reader.CompleteAsync();
         await _writer.CompleteAsync();
     }
+
+    /// <summary>
+    /// Write a WebSocket frame header directly to the PipeWriter. No intermediate buffer.
+    /// </summary>
+    private static void WriteFrameHeader(PipeWriter writer, WebSocketOpcode opcode, int payloadLength)
+    {
+        int headerSize = payloadLength < 126 ? 2 : payloadLength <= 65535 ? 4 : 10;
+        var span = writer.GetSpan(headerSize);
+        span[0] = (byte)(0x80 | (byte)opcode); // FIN + opcode
+        if (payloadLength < 126)
+        {
+            span[1] = (byte)payloadLength;
+        }
+        else if (payloadLength <= 65535)
+        {
+            span[1] = 126;
+            BinaryPrimitives.WriteUInt16BigEndian(span.Slice(2), (ushort)payloadLength);
+        }
+        else
+        {
+            span[1] = 127;
+            BinaryPrimitives.WriteInt64BigEndian(span.Slice(2), (long)payloadLength);
+        }
+        writer.Advance(headerSize);
+    }
 }
 
 /// <summary>
@@ -193,6 +224,7 @@ public enum WebSocketMessageType
 
 /// <summary>
 /// A complete WebSocket message (may have been reassembled from multiple frames).
+/// Data points into WebSocketConnection._messageBuffer — valid until the next ReceiveAsync call.
 /// </summary>
 public readonly struct WebSocketMessage
 {

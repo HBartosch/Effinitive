@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-06-02
+
+### Added
+- **Static files — Brotli serving** — `StaticFileHandler` loads pre-generated `.br` sidecar files at startup and serves them with `Content-Encoding: br` + `Vary: Accept-Encoding` when the client advertises `Accept-Encoding: br`. Brotli is served preferentially over gzip when both are available.
+- **Static files — gzip sidecar files** — Pre-generated `.gz` sidecar files are now loaded preferentially over runtime compression. `.gz` and `.br` sidecars are excluded from directory enumeration to prevent double-serving.
+
+### Performance
+- **HTTP/3**: New `BuildResponseBuffer` helper combines the HEADERS frame and optional DATA frame into one pooled buffer for a single `WriteAsync` call per response, reducing QUIC stream lock acquisitions from 4 to 1.
+- **HTTP/3**: `ReadVariableIntAsync` uses `ArrayPool<byte>.Shared.Rent(8)` instead of `new byte[1]`/`new byte[N]` per call, eliminating per-frame heap allocation.
+- **HTTP/3**: `ReadBodyAsync` returns `Array.Empty<byte>()` immediately when the QUIC stream's read side is already closed (common for GET requests with no body).
+- **WebSocket**: `_messageBuffer` (`ArrayBufferWriter<byte>`) is now a persistent field reset on each `ReceiveAsync` call — eliminates one `ArrayBufferWriter` allocation per received message.
+- **WebSocket**: New `TryParseHeader` fast path parses only the frame header without copying the payload; payload is copied directly into `_messageBuffer` from the pipe sequence, removing the `new byte[payloadLength]` allocation from the hot path.
+- **WebSocket**: New `ApplyMask` uses `MemoryMarshal.Cast<byte, uint>` XOR (4 bytes per iteration; JIT auto-vectorizes on x64/ARM).
+- **WebSocket**: `SendAsync` writes frame header + payload directly to `PipeWriter` via new `WriteFrameHeader` helper, eliminating the pre-allocated `_writeBuffer` intermediate copy.
+- **WebSocket**: `_hasPendingData` flag defers `FlushAsync` when more client frames are already buffered in the pipe, batching multiple echo responses into a single syscall.
+- **WebSocket**: Pipe reader/writer buffer size increased from 4 KB to 64 KB for higher pipelining throughput.
+- **Memory**: Socket send buffer reduced from 256 KB to 32 KB per accepted connection. At 4 096 concurrent connections the previous value allocated ~1 GiB of socket kernel memory as baseline.
+- **Memory**: Thread-local JSON serialization `MemoryStream` initial size reduced from 1 MB to 64 KB; the stream grows on demand.
+
+### Fixed
+- **Chunked upload deadlock** — `PipeOptions.pauseWriterThreshold` raised from 1 MiB to 32 MiB (resume from 512 KiB to 16 MiB). The old thresholds caused the pipe writer to stall before the HTTP/1.1 parser finished consuming chunked request bodies, deadlocking large uploads.
+- **Exception logging in production** — Request-handling exceptions no longer write to stdout when the server is in production mode (`EnableDebugLogging = false`).
+
+### Changed
+- `StaticFileHandler.TryServe` signature now accepts `string? acceptEncoding` (the raw `Accept-Encoding` header value) to select the correct pre-compressed response body. Callers that constructed `StaticFileHandler` directly need to pass the header value; users of the `UseStaticFiles()` builder API are unaffected.
+
+---
+
 ## [2.0.0] - 2026-05-19
 
 ### Added

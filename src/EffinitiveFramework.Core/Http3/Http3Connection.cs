@@ -275,6 +275,10 @@ public sealed class Http3Connection : IAsyncDisposable
 
     private static async Task<byte[]> ReadBodyAsync(QuicStream stream, CancellationToken cancellationToken)
     {
+        // Fast path: FIN already signaled (common for GET requests)
+        if (stream.ReadsClosed.IsCompleted)
+            return Array.Empty<byte>();
+
         using var ms = new MemoryStream();
         var buffer = ArrayPool<byte>.Shared.Rent(16384);
         try
@@ -319,39 +323,71 @@ public sealed class Http3Connection : IAsyncDisposable
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
-        return ms.ToArray();
+        return ms.Length == 0 ? Array.Empty<byte>() : ms.ToArray();
     }
 
     private async Task SendResponseAsync(QuicStream stream, HttpResponse response, CancellationToken cancellationToken)
     {
         response.MaterializeDeferredBody();
 
-        // Build response headers for QPACK encoding
-        var headers = new List<(string name, string value)>();
-        headers.Add((":status", response.StatusCode.ToString()));
+        var body = response.Body;
+        var bodyLength = body?.Length ?? 0;
+
+        var headerList = new List<(string name, string value)>(6);
+        headerList.Add((":status", response.StatusCode.ToString()));
         if (!string.IsNullOrEmpty(response.ContentType))
-            headers.Add(("content-type", response.ContentType));
-        if (response.Body != null && response.Body.Length > 0)
-            headers.Add(("content-length", response.Body.Length.ToString()));
+            headerList.Add(("content-type", response.ContentType));
+        if (bodyLength > 0)
+            headerList.Add(("content-length", bodyLength.ToString()));
         if (response.Headers != null)
-        {
             foreach (var h in response.Headers)
-                headers.Add((h.Key.ToLowerInvariant(), h.Value));
-        }
+                headerList.Add((h.Key.ToLowerInvariant(), h.Value));
 
-        var encodedHeaders = _qpackEncoder.Encode(headers);
+        var encodedHeaders = _qpackEncoder.Encode(headerList);
 
-        // Write HEADERS frame
-        await WriteFrameAsync(stream, FrameTypeHeaders, encodedHeaders, cancellationToken);
-
-        // Write DATA frame if body present
-        if (response.Body != null && response.Body.Length > 0)
+        // Single WriteAsync per response: HEADERS frame + optional DATA frame batched into one buffer.
+        // Previously 4 separate WriteAsync calls; each QUIC stream write acquires the send lock.
+        var buf = BuildResponseBuffer(encodedHeaders, body, bodyLength, out var totalSize);
+        try
         {
-            await WriteFrameAsync(stream, FrameTypeData, response.Body, cancellationToken);
+            await stream.WriteAsync(buf.AsMemory(0, totalSize), cancellationToken);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buf);
         }
 
-        // Signal end of response
         stream.CompleteWrites();
+    }
+
+    // Non-async so stackalloc is valid (no await boundary).
+    private static byte[] BuildResponseBuffer(byte[] encodedHeaders, byte[]? body, int bodyLength, out int totalSize)
+    {
+        Span<byte> hdrPrefix = stackalloc byte[16];
+        int hp = WriteVariableInt(hdrPrefix, FrameTypeHeaders);
+        hp += WriteVariableInt(hdrPrefix.Slice(hp), encodedHeaders.Length);
+
+        totalSize = hp + encodedHeaders.Length;
+
+        Span<byte> dataPrefix = stackalloc byte[16];
+        int dp = 0;
+        if (bodyLength > 0)
+        {
+            dp = WriteVariableInt(dataPrefix, FrameTypeData);
+            dp += WriteVariableInt(dataPrefix.Slice(dp), bodyLength);
+            totalSize += dp + bodyLength;
+        }
+
+        var buf = ArrayPool<byte>.Shared.Rent(totalSize);
+        int pos = 0;
+        hdrPrefix.Slice(0, hp).CopyTo(buf.AsSpan(pos)); pos += hp;
+        encodedHeaders.CopyTo(buf.AsSpan(pos)); pos += encodedHeaders.Length;
+        if (bodyLength > 0)
+        {
+            dataPrefix.Slice(0, dp).CopyTo(buf.AsSpan(pos)); pos += dp;
+            body!.CopyTo(buf.AsSpan(pos));
+        }
+        return buf;
     }
 
     private static async Task SendSettingsAsync(QuicStream controlStream, CancellationToken cancellationToken)
@@ -428,22 +464,28 @@ public sealed class Http3Connection : IAsyncDisposable
     /// </summary>
     private static async Task<long> ReadVariableIntAsync(QuicStream stream, CancellationToken cancellationToken)
     {
-        var firstByte = new byte[1];
-        await stream.ReadExactlyAsync(firstByte, cancellationToken);
-
-        var prefix = firstByte[0] >> 6;
-        long value = firstByte[0] & 0x3F;
-
-        var length = 1 << prefix;
-        if (length > 1)
+        // Use a pooled 8-byte buffer to avoid per-call heap allocation (new byte[1] / new byte[N]).
+        var buf = ArrayPool<byte>.Shared.Rent(8);
+        try
         {
-            var remaining = new byte[length - 1];
-            await stream.ReadExactlyAsync(remaining, cancellationToken);
-            for (int i = 0; i < remaining.Length; i++)
-                value = (value << 8) | remaining[i];
-        }
+            await stream.ReadExactlyAsync(buf.AsMemory(0, 1), cancellationToken);
+            var prefix = buf[0] >> 6;
+            long value = buf[0] & 0x3F;
 
-        return value;
+            int extra = (1 << prefix) - 1;
+            if (extra > 0)
+            {
+                await stream.ReadExactlyAsync(buf.AsMemory(0, extra), cancellationToken);
+                for (int i = 0; i < extra; i++)
+                    value = (value << 8) | buf[i];
+            }
+
+            return value;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buf);
+        }
     }
 
     public async ValueTask DisposeAsync()

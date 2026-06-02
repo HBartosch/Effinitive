@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>2.0.0</Version>
+    <Version>2.1.0</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,7 +19,7 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v1.3.1: HTTP/2 bug fixes — Fixed SETTINGS frame sending ENABLE_PUSH=1 (RFC 7540 §6.5.2 violation causing clients to reject connection). Fixed partial network read handling in client preface and frame reads. Fixed PipeReader/PipeWriter interference with HTTP/2 direct stream I/O. Combined HEADERS+DATA response frames into single TLS write for reliability. Fixed HTTP/1.1 request routing: unknown methods on known paths now correctly return 405 instead of 501. Removed incorrect rejection of Expect: 100-continue with body.</PackageReleaseNotes>
+    <PackageReleaseNotes>v2.1.0: Performance and reliability improvements. HTTP/3: single WriteAsync per response (was 4), ArrayPool in ReadVariableIntAsync, fast-path empty body on GET. WebSocket: zero heap allocations on echo hot path — persistent ArrayBufferWriter, header-only TryParseHeader, SIMD ApplyMask, deferred batch flush; pipe buffers 4KB→64KB. Static files: Brotli serving via pre-generated .br sidecar files; gzip sidecar preference over runtime compression; proper AcceptsEncoding word-boundary matching. Memory: socket send buffer 256KB→32KB (saves ~1GiB at 4096 connections); JSON thread-local buffer 1MB→64KB initial. Fixes: chunked upload deadlock (pipe pause threshold 1MiB→32MiB); exception logging now gated behind debug mode in production.</PackageReleaseNotes>
     <RepositoryType>git</RepositoryType>
     <Copyright>Copyright (c) 2025 Henry Bartosch</Copyright>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>

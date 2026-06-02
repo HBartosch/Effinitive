@@ -67,7 +67,7 @@ public static class HttpResponseWriter
             ms.SetLength(0);
             return ms;
         }
-        ms = new MemoryStream(1_048_576); // 1MB initial — matches typical large JSON response
+        ms = new MemoryStream(65_536); // 64KB initial — grows on demand; large initial was wasteful per-thread
         t_jsonBuffer = ms;
         return ms;
     }

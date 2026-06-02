@@ -46,6 +46,11 @@ public class Http2Connection : IAsyncDisposable
     // Connection flow control
     private int _connectionWindowSize = (int)Http2Constants.DefaultInitialWindowSize;
     
+    // Set when client sends GOAWAY: refuse new streams.
+    private bool _receivedGoAway;
+    // Cancelled 500ms after GOAWAY is received to unblock the frame-reading loop.
+    private readonly CancellationTokenSource _goAwayCts = new();
+
     // State
     private bool _prefaceReceived;
     private bool _settingsAckReceived;
@@ -79,7 +84,9 @@ public class Http2Connection : IAsyncDisposable
         // Single writer task: all frame writes are queued here so the frame-reading
         // loop is never blocked waiting to send a SETTINGS ACK or PING ACK while
         // response tasks are occupying the old write lock.
-        var writerTask = DrainWriteChannelAsync(cancellationToken);
+        // Drain uses a cancellable token so the 2-second shutdown timeout can stop it.
+        using var drainCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var writerTask = DrainWriteChannelAsync(drainCts.Token);
 
         try
         {
@@ -105,8 +112,11 @@ public class Http2Connection : IAsyncDisposable
         }
         finally
         {
-            // Signal writer that no more frames are coming, then wait for it to drain.
+            // Signal writer that no more frames are coming, then give it 2 seconds to
+            // flush remaining DATA frames before cancelling (e.g. if the client stopped reading).
             _writeChannel.Writer.TryComplete();
+            drainCts.CancelAfter(TimeSpan.FromSeconds(2));
+            _goAwayCts.Dispose();
             try { await writerTask; } catch { /* drainer already swallows errors */ }
         }
     }
@@ -292,12 +302,17 @@ public class Http2Connection : IAsyncDisposable
     /// </summary>
     private async Task ProcessFramesAsync(CancellationToken cancellationToken)
     {
+        // Link outer token with _goAwayCts so that receiving GOAWAY (which calls
+        // _goAwayCts.CancelAfter) eventually unblocks the blocking ReadAsync call,
+        // allowing the frame loop to exit cleanly.
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _goAwayCts.Token);
+        var readToken = linkedCts.Token;
         var headerBuffer = new byte[Http2Constants.FrameHeaderLength];
-        
-        while (!cancellationToken.IsCancellationRequested)
+
+        while (!readToken.IsCancellationRequested)
         {
             // Read frame header (must read all 9 bytes)
-            if (!await ReadExactlyAsync(headerBuffer, 0, Http2Constants.FrameHeaderLength, cancellationToken))
+            if (!await ReadExactlyAsync(headerBuffer, 0, Http2Constants.FrameHeaderLength, readToken))
             {
                 break; // Connection closed
             }
@@ -321,7 +336,7 @@ public class Http2Connection : IAsyncDisposable
                 
                 // Use ArrayPool to reduce allocations on the hot path
                 rentedBuffer = ArrayPool<byte>.Shared.Rent(frame.Length);
-                if (!await ReadExactlyAsync(rentedBuffer, 0, frame.Length, cancellationToken))
+                if (!await ReadExactlyAsync(rentedBuffer, 0, frame.Length, readToken))
                 {
                     ArrayPool<byte>.Shared.Return(rentedBuffer);
                     await SendGoAwayAsync(Http2Constants.ErrorFrameSizeError, cancellationToken);
@@ -398,7 +413,13 @@ public class Http2Connection : IAsyncDisposable
                 break;
             
             case Http2Constants.FrameTypeGoAway:
-                // Connection closing
+                // RFC 7540 §6.8: peer is done sending new streams. Send GOAWAY back so
+                // the client knows the server is also closing, then cancel the frame-reading
+                // loop after 500ms. The delay lets the drain flush the GOAWAY frame and
+                // any already-queued DATA frames before we stop reading.
+                _receivedGoAway = true;
+                await SendGoAwayAsync(Http2Constants.ErrorNoError, cancellationToken);
+                _goAwayCts.CancelAfter(TimeSpan.FromMilliseconds(500));
                 break;
             
             case Http2Constants.FrameTypeContinuation:
@@ -493,6 +514,13 @@ public class Http2Connection : IAsyncDisposable
             return;
         }
         
+        // RFC 7540 §6.8: after receiving GOAWAY, refuse new streams
+        if (_receivedGoAway)
+        {
+            await SendRstStreamAsync(streamId, Http2Constants.ErrorRefusedStream, cancellationToken);
+            return;
+        }
+
         // SECURITY: Enforce max concurrent streams including pushed streams (prevents resource exhaustion)
         var totalStreams = _streams.Count + _pushedStreams.Count;
         if (totalStreams >= _maxConcurrentStreams && !_streams.ContainsKey(streamId))
@@ -778,31 +806,71 @@ public class Http2Connection : IAsyncDisposable
         }
         else
         {
-            // Combined HEADERS + DATA in one contiguous buffer (single write syscall).
             var bodyLen = response.Body.Length;
-            var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
-            var totalLen = headersFrameLen + Http2Constants.FrameHeaderLength + bodyLen;
-            var combined = ArrayPool<byte>.Shared.Rent(totalLen);
+            var maxData = (int)_maxFrameSize;
 
-            new Http2Frame
+            if (bodyLen <= maxData)
             {
-                Length = encodedHeaders.Length,
-                Type = Http2Constants.FrameTypeHeaders,
-                Flags = Http2Constants.FlagEndHeaders,
-                StreamId = streamId
-            }.WriteHeader(combined);
-            encodedHeaders.AsSpan().CopyTo(combined.AsSpan(Http2Constants.FrameHeaderLength));
+                // Small body: combine HEADERS + DATA into one contiguous buffer (single write).
+                var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
+                var totalLen = headersFrameLen + Http2Constants.FrameHeaderLength + bodyLen;
+                var combined = ArrayPool<byte>.Shared.Rent(totalLen);
 
-            new Http2Frame
+                new Http2Frame
+                {
+                    Length = encodedHeaders.Length,
+                    Type = Http2Constants.FrameTypeHeaders,
+                    Flags = Http2Constants.FlagEndHeaders,
+                    StreamId = streamId
+                }.WriteHeader(combined);
+                encodedHeaders.AsSpan().CopyTo(combined.AsSpan(Http2Constants.FrameHeaderLength));
+
+                new Http2Frame
+                {
+                    Length = bodyLen,
+                    Type = Http2Constants.FrameTypeData,
+                    Flags = Http2Constants.FlagEndStream,
+                    StreamId = streamId
+                }.WriteHeader(combined.AsSpan(headersFrameLen));
+                response.Body.AsSpan().CopyTo(combined.AsSpan(headersFrameLen + Http2Constants.FrameHeaderLength));
+
+                await _writeChannel.Writer.WriteAsync(new PooledBuffer(combined, totalLen, IsPooled: true), cancellationToken);
+            }
+            else
             {
-                Length = bodyLen,
-                Type = Http2Constants.FrameTypeData,
-                Flags = Http2Constants.FlagEndStream,
-                StreamId = streamId
-            }.WriteHeader(combined.AsSpan(headersFrameLen));
-            response.Body.AsSpan().CopyTo(combined.AsSpan(headersFrameLen + Http2Constants.FrameHeaderLength));
+                // Large body: send HEADERS then DATA split into max-frame-size chunks.
+                // RFC 7540 §4.2: endpoints MUST NOT send frames larger than SETTINGS_MAX_FRAME_SIZE.
+                var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
+                var hdrBuf = ArrayPool<byte>.Shared.Rent(headersFrameLen);
+                new Http2Frame
+                {
+                    Length = encodedHeaders.Length,
+                    Type = Http2Constants.FrameTypeHeaders,
+                    Flags = Http2Constants.FlagEndHeaders,
+                    StreamId = streamId
+                }.WriteHeader(hdrBuf);
+                encodedHeaders.AsSpan().CopyTo(hdrBuf.AsSpan(Http2Constants.FrameHeaderLength));
+                await _writeChannel.Writer.WriteAsync(new PooledBuffer(hdrBuf, headersFrameLen, IsPooled: true), cancellationToken);
 
-            await _writeChannel.Writer.WriteAsync(new PooledBuffer(combined, totalLen, IsPooled: true), cancellationToken);
+                int offset = 0;
+                while (offset < bodyLen)
+                {
+                    int chunkSize = Math.Min(maxData, bodyLen - offset);
+                    bool isLast = offset + chunkSize >= bodyLen;
+                    var dataFrameLen = Http2Constants.FrameHeaderLength + chunkSize;
+                    var dataBuf = ArrayPool<byte>.Shared.Rent(dataFrameLen);
+                    new Http2Frame
+                    {
+                        Length = chunkSize,
+                        Type = Http2Constants.FrameTypeData,
+                        Flags = isLast ? Http2Constants.FlagEndStream : (byte)0,
+                        StreamId = streamId
+                    }.WriteHeader(dataBuf);
+                    response.Body.AsSpan(offset, chunkSize).CopyTo(dataBuf.AsSpan(Http2Constants.FrameHeaderLength));
+                    await _writeChannel.Writer.WriteAsync(new PooledBuffer(dataBuf, dataFrameLen, IsPooled: true), cancellationToken);
+                    offset += chunkSize;
+                }
+            }
         }
     }
     
@@ -898,7 +966,7 @@ public class Http2Connection : IAsyncDisposable
         
         await SendFrameAsync(frame, cancellationToken);
     }
-    
+
     private async Task SendRstStreamAsync(int streamId, uint errorCode, CancellationToken cancellationToken)
     {
         var payloadBuffer = new byte[4];

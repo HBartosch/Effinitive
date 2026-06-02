@@ -185,8 +185,9 @@ public sealed partial class EffinitiveServer : IDisposable
     private static void ConfigureAcceptedSocket(Socket socket)
     {
         socket.NoDelay = true;
-        // Larger send buffer for compressed responses (~200KB output)
-        socket.SendBufferSize = 262_144;  // 256KB
+        // 32KB send buffer: balanced for throughput without burning ~1GiB at 4096 connections
+        // (256KB × 4096 = 1GiB, which was the primary driver of elevated baseline memory).
+        socket.SendBufferSize = 32_768;   // 32KB
         socket.ReceiveBufferSize = 16_384; // 16KB (small requests)
     }
 

@@ -131,8 +131,8 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
                 pool: MemoryPool<byte>.Shared,
                 readerScheduler: PipeScheduler.ThreadPool,
                 writerScheduler: ioScheduler,
-                pauseWriterThreshold: 1024 * 1024,      // 1 MiB input backpressure
-                resumeWriterThreshold: 512 * 1024,       // resume at 512 KiB
+                pauseWriterThreshold: 32 * 1024 * 1024, // 32 MiB: chunked bodies accumulate before the parser can complete
+                resumeWriterThreshold: 16 * 1024 * 1024,
                 useSynchronizationContext: false);
 
             var outputOptions = new PipeOptions(

@@ -36,9 +36,10 @@ public sealed partial class EffinitiveServer
         }
 
         // Static file fast-path: serve cached files before any routing or middleware
+        request.Headers.TryGetValue("Accept-Encoding", out var acceptEncoding);
         if (_staticFileHandler != null &&
             request.Method is "GET" or "HEAD" &&
-            _staticFileHandler.TryServe(request.Path.AsSpan(), response))
+            _staticFileHandler.TryServe(request.Path.AsSpan(), acceptEncoding, response))
         {
             if (request.Method == "HEAD")
             {
@@ -170,15 +171,15 @@ public sealed partial class EffinitiveServer
         }
         catch (Exception ex)
         {
-            // Log exception details to console
-            Console.WriteLine($"❌ EXCEPTION: {ex.GetType().Name}");
-            Console.WriteLine($"   Message: {ex.Message}");
-            Console.WriteLine($"   StackTrace: {ex.StackTrace}");
-            if (ex.InnerException != null)
+            if (!_isProduction)
             {
-                Console.WriteLine($"   InnerException: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                Console.WriteLine($"❌ EXCEPTION: {ex.GetType().Name}");
+                Console.WriteLine($"   Message: {ex.Message}");
+                Console.WriteLine($"   StackTrace: {ex.StackTrace}");
+                if (ex.InnerException != null)
+                    Console.WriteLine($"   InnerException: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
             }
-            
+
             response.StatusCode = 500;
             var problemDetails = ProblemDetails.FromException(ex);
             response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
