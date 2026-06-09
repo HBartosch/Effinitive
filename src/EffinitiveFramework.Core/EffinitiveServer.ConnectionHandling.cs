@@ -84,9 +84,12 @@ public sealed partial class EffinitiveServer
                 var response = new HttpResponse();
                 while (request != null)
                 {
-                    // Attach streaming body reader for large bodies (> 1 MB threshold)
+                    // Attach streaming body reader: chunked bodies get a dechunking stream;
+                    // large Content-Length bodies get a length-limited pipe reader.
                     if (request.BodyDeferred)
-                        request.BodyStream = connection.CreateBodyStream(request.ContentLength);
+                        request.BodyStream = request.IsChunked
+                            ? connection.CreateChunkedBodyStream()
+                            : connection.CreateBodyStream(request.ContentLength);
 
                     _metrics.IncrementRequests();
 
@@ -131,6 +134,18 @@ public sealed partial class EffinitiveServer
                         // Route and handle request
                         await HandleRequestAsync(request, response, cancellationToken);
                     }
+                    catch (HttpParseException parseEx)
+                    {
+                        // Chunked body framing error detected while reading — send 400 and close
+                        response.Reset();
+                        response.StatusCode = parseEx.StatusCode;
+                        response.KeepAlive = false;
+                        response.Body = System.Text.Encoding.UTF8.GetBytes(parseEx.Message);
+                        response.ContentType = "text/plain";
+                        await connection.WriteResponseAsync(response, cancellationToken, flush: true);
+                        keepAlive = false;
+                        break;
+                    }
                     catch (Exception ex)
                     {
                         // Return error response
@@ -158,9 +173,11 @@ public sealed partial class EffinitiveServer
                     var flushResponse = !response.KeepAlive || !request.KeepAlive;
                     await connection.WriteResponseAsync(response, cancellationToken, flush: flushResponse);
 
-                    // Drain any unread streamed body bytes so the next request can be read
+                    // Drain any unread body bytes so the pipe is clean for the next request
                     if (request.BodyStream is PipeReaderBodyStream pbs)
                         await pbs.DrainAsync(cancellationToken);
+                    else if (request.BodyStream is ChunkedBodyStream cbs)
+                        await cbs.DrainAsync(cancellationToken);
 
                     if (!response.KeepAlive || !request.KeepAlive)
                     {

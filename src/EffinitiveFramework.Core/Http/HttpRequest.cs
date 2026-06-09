@@ -55,6 +55,12 @@ public sealed class HttpRequest
     public bool BodyDeferred { get; set; }
 
     /// <summary>
+    /// When true, the request uses Transfer-Encoding: chunked. <see cref="BodyStream"/> is a
+    /// <see cref="ChunkedBodyStream"/> that dechunks on-the-fly; <see cref="ContentLength"/> is -1.
+    /// </summary>
+    internal bool IsChunked { get; set; }
+
+    /// <summary>
     /// Streaming access to the request body when <see cref="BodyDeferred"/> is true.
     /// Automatically drained by the framework after the endpoint completes.
     /// </summary>
@@ -175,6 +181,7 @@ public sealed class HttpRequest
         Items?.Clear();
         RouteValues?.Clear();
         BodyDeferred = false;
+        IsChunked = false;
         BodyStream = null;
         _cookies = null;
         _query = null;

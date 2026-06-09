@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-06-09
+
+### Performance
+- **Chunked body streaming** — `ChunkedBodyStream` replaces the old `TryParseChunked` method. The new implementation is a `PipeReader`-backed `Stream` that dechunks on-the-fly without ever buffering the full body, eliminating O(n²) byte-copying for large chunked uploads.
+
+### Fixed
+- **RFC 9112 chunk-size strictness** — Chunk sizes are now validated as `1*HEXDIG` with no leading/trailing whitespace, no `0x` prefix, no `+`/`_` separators, and an overflow guard to prevent excessively large size values.
+- **Bare LF rejection** — Bare `\n` line terminators in chunk-size lines and trailers now produce `400 Bad Request` instead of hanging or accepting the request.
+- **CRLF terminator validation** — The two bytes following each chunk's data section are now verified to be `\r\n`; any other bytes produce `400 Bad Request`.
+- **Chunk extension validation** — Extensions with a bare `;` (no name), invalid RFC 9110 token characters in the extension name, or control characters anywhere in the extension now produce `400 Bad Request`.
+- **`HttpParseException` propagation** — Internal `catch (Exception)` handlers in the request pipeline no longer swallow `HttpParseException`. Malformed chunked bodies now correctly produce `400 Bad Request` with connection close instead of `500 Internal Server Error`.
+
+---
+
 ## [2.1.0] - 2026-06-02
 
 ### Added

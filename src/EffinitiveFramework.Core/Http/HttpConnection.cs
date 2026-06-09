@@ -167,11 +167,18 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Create a streaming body reader for a deferred (large) request body.
+    /// Create a streaming body reader for a deferred (large) Content-Length body.
     /// The caller is responsible for draining it before the next request.
     /// </summary>
     internal PipeReaderBodyStream CreateBodyStream(long contentLength)
         => new PipeReaderBodyStream(_reader!, contentLength);
+
+    /// <summary>
+    /// Create a streaming body reader that dechunks Transfer-Encoding: chunked on-the-fly.
+    /// The caller is responsible for draining it before the next request.
+    /// </summary>
+    internal ChunkedBodyStream CreateChunkedBodyStream()
+        => new ChunkedBodyStream(_reader!);
 
     /// <summary>
     /// Read and parse HTTP request

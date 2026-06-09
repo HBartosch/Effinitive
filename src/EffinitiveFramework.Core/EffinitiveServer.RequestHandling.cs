@@ -169,7 +169,7 @@ public sealed partial class EffinitiveServer
             // No middleware - write endpoint result directly into the caller response.
             await ExecuteEndpointAsync(request, routeValue, cancellationToken, response);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not HttpParseException)
         {
             if (!_isProduction)
             {
@@ -388,7 +388,7 @@ public sealed partial class EffinitiveServer
                 scope?.Dispose();
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not HttpParseException)
         {
             // Log exception details only in debug mode
             if (!_isProduction)

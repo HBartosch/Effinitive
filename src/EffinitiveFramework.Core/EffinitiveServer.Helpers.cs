@@ -172,19 +172,19 @@ public sealed partial class EffinitiveServer
         async Task<HttpResponse> RequestHandler(HttpRequest request)
         {
             var response = new HttpResponse();
-            
+
             try
             {
                 await HandleRequestAsync(request, response, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not HttpParseException)
             {
                 await HandleErrorAsync(ex, request, response);
             }
-            
+
             return response;
         }
-        
+
         var http2Connection = new Http2Connection(connection.Stream!, RequestHandler);
         
         try
@@ -336,7 +336,7 @@ public sealed partial class EffinitiveServer
                     {
                         await HandleRequestAsync(request, response, cancellationToken);
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (ex is not HttpParseException)
                     {
                         await HandleErrorAsync(ex, request, response);
                     }

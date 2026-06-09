@@ -103,21 +103,14 @@ public static class HttpRequestParser
             // Validate the TE value is exactly "chunked"
             ValidateTransferEncoding(te!);
 
-            // Parse chunked encoding
-            var remainingBuffer = buffer.Slice(reader.Position);
-            if (!ChunkedEncodingParser.TryParseChunked(
-                ref remainingBuffer,
-                out var body,
-                out var chunkConsumed,
-                out var chunkBytesConsumed,
-                maxBodySize))
-            {
-                return false; // Need more data
-            }
-
-            request.Body = body.AsMemory();
-            request.ContentLength = body.Length;
-            reader.Advance(chunkBytesConsumed);
+            // Never buffer the full chunked body. Return immediately and let
+            // the caller attach a ChunkedBodyStream that dechunks from the pipe on-the-fly.
+            // This eliminates the O(n²) re-allocation that previously caused OOM on 10M+ bodies.
+            consumed = reader.Position;
+            bytesConsumed = (int)reader.Consumed;
+            request.BodyDeferred = true;
+            request.IsChunked = true;
+            return true;
         }
         else if (request.ContentLength > 0)
         {
