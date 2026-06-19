@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-06-19
+
+### Fixed
+- **Large transfer throughput (uploads and downloads)** — Removed the explicit `Socket.ReceiveBufferSize`
+  (16 KB) and `Socket.SendBufferSize` (32 KB) on accepted connections so the OS autotunes both TCP
+  windows. Setting either manually disabled window autotuning
+
 ## [2.1.2] - 2026-06-11
 
 ### Added
