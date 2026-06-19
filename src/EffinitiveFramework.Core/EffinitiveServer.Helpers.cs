@@ -153,14 +153,36 @@ public sealed partial class EffinitiveServer
         return System.Text.Encoding.UTF8.GetBytes(value);
     }
 
-    private async Task HandleErrorAsync(Exception exception, HttpRequest request, HttpResponse response)
+    private void HandleErrorAsync(Exception exception, HttpRequest request, HttpResponse response)
     {
         response.StatusCode = 500;
         var problemDetails = ProblemDetails.FromException(exception, 500, request.Path);
         response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
         response.ContentType = "application/problem+json";
+    }
 
-        await Task.CompletedTask;
+    private void WriteProblemResponse(HttpResponse response, int statusCode, string message)
+    {
+        response.StatusCode = statusCode;
+        response.Body = JsonSerializer.SerializeToUtf8Bytes(ProblemDetails.ForStatusCode(statusCode, message), _options.JsonOptions);
+        response.ContentType = "application/problem+json";
+    }
+
+    private void WriteExceptionResponse(HttpResponse response, Exception ex)
+    {
+        response.StatusCode = 500;
+        response.Body = JsonSerializer.SerializeToUtf8Bytes(ProblemDetails.FromException(ex), _options.JsonOptions);
+        response.ContentType = "application/problem+json";
+    }
+
+    private void LogException(Exception ex)
+    {
+        if (_isProduction) return;
+        Console.WriteLine($"❌ EXCEPTION: {ex.GetType().Name}");
+        Console.WriteLine($"   Message: {ex.Message}");
+        Console.WriteLine($"   StackTrace: {ex.StackTrace}");
+        if (ex.InnerException != null)
+            Console.WriteLine($"   InnerException: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
     }
 
     /// <summary>
@@ -179,7 +201,7 @@ public sealed partial class EffinitiveServer
             }
             catch (Exception ex) when (ex is not HttpParseException)
             {
-                await HandleErrorAsync(ex, request, response);
+                HandleErrorAsync(ex, request, response);
             }
 
             return response;
@@ -237,7 +259,7 @@ public sealed partial class EffinitiveServer
             return false;
 
         // Must have Sec-WebSocket-Key
-        return headers.ContainsKey("Sec-WebSocket-Key");
+        return headers.ContainsKey(HeaderNames.SecWebSocketKey);
     }
 
     /// <summary>
@@ -249,7 +271,7 @@ public sealed partial class EffinitiveServer
         Func<WebSocketConnection, CancellationToken, Task> handler,
         CancellationToken cancellationToken)
     {
-        var clientKey = request.Headers!["Sec-WebSocket-Key"];
+        var clientKey = request.Headers![HeaderNames.SecWebSocketKey];
         var acceptKey = WebSocketConnection.ComputeAcceptKey(clientKey);
 
         // Build 101 Switching Protocols response
@@ -259,9 +281,9 @@ public sealed partial class EffinitiveServer
             KeepAlive = false,
             ContentType = null
         };
-        response.Headers["Upgrade"] = "websocket";
-        response.Headers["Connection"] = "Upgrade";
-        response.Headers["Sec-WebSocket-Accept"] = acceptKey;
+        response.Headers[HeaderNames.Upgrade] = HeaderValues.Websocket;
+        response.Headers[HeaderNames.Connection] = HeaderNames.Upgrade;
+        response.Headers[HeaderNames.SecWebSocketAccept] = acceptKey;
 
         // Send the upgrade response
         await connection.WriteResponseAsync(response, cancellationToken, flush: true);
@@ -338,7 +360,7 @@ public sealed partial class EffinitiveServer
                     }
                     catch (Exception ex) when (ex is not HttpParseException)
                     {
-                        await HandleErrorAsync(ex, request, response);
+                        HandleErrorAsync(ex, request, response);
                     }
                     return response;
                 }

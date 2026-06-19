@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using EffinitiveFramework.Core.DependencyInjection;
 using EffinitiveFramework.Core.Http;
@@ -11,32 +12,31 @@ public sealed partial class EffinitiveServer
         // Handle asterisk-form target: only OPTIONS allowed with *
         if (request.Path == "*")
         {
-            if (request.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+            if (request.Method.Equals(HttpMethods.Options, StringComparison.OrdinalIgnoreCase))
             {
                 response.StatusCode = 204;
-                response.Headers["Allow"] = "GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS";
+                response.Headers[HeaderNames.Allow] = HttpMethods.AllowAll;
                 response.Body = Array.Empty<byte>();
                 return;
             }
-            // Any other method with * target is invalid
             response.StatusCode = 400;
             response.Body = System.Text.Encoding.UTF8.GetBytes("Asterisk-form request-target only valid for OPTIONS");
-            response.ContentType = "text/plain";
+            response.ContentType = MediaTypes.TextPlain;
             response.KeepAlive = false;
             return;
         }
 
         // Handle OPTIONS for specific paths
-        if (request.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+        if (request.Method.Equals(HttpMethods.Options, StringComparison.OrdinalIgnoreCase))
         {
             response.StatusCode = 204;
-            response.Headers["Allow"] = "GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS";
+            response.Headers[HeaderNames.Allow] = HttpMethods.AllowAll;
             response.Body = Array.Empty<byte>();
             return;
         }
 
         // Static file fast-path: serve cached files before any routing or middleware
-        request.Headers.TryGetValue("Accept-Encoding", out var acceptEncoding);
+        request.Headers.TryGetValue(HeaderNames.AcceptEncoding, out var acceptEncoding);
         if (_staticFileHandler != null &&
             request.Method is "GET" or "HEAD" &&
             _staticFileHandler.TryServe(request.Path.AsSpan(), acceptEncoding, response))
@@ -52,32 +52,30 @@ public sealed partial class EffinitiveServer
         }
 
         // Reject CONNECT method (not supported by origin servers)
-        if (request.Method.Equals("CONNECT", StringComparison.OrdinalIgnoreCase))
+        if (request.Method.Equals(HttpMethods.Connect, StringComparison.OrdinalIgnoreCase))
         {
             response.StatusCode = 405;
             response.Body = System.Text.Encoding.UTF8.GetBytes("CONNECT method not supported");
-            response.ContentType = "text/plain";
+            response.ContentType = MediaTypes.TextPlain;
             response.KeepAlive = false;
             return;
         }
 
         // Handle Upgrade requests: respond with 426 Upgrade Required
-        if (request.Headers.ContainsKey("Upgrade") &&
-            request.Headers.TryGetValue("Connection", out var connVal) &&
+        if (request.Headers.ContainsKey(HeaderNames.Upgrade) &&
+            request.Headers.TryGetValue(HeaderNames.Connection, out var connVal) &&
             connVal.Contains("Upgrade", StringComparison.OrdinalIgnoreCase))
         {
             response.StatusCode = 426;
             response.Body = System.Text.Encoding.UTF8.GetBytes("Upgrade Required");
-            response.ContentType = "text/plain";
+            response.ContentType = MediaTypes.TextPlain;
             return;
         }
 
         // For HEAD, find the GET route
         var methodForRoute = request.Method;
-        if (request.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
-        {
+        if (request.Method.Equals(HttpMethods.Head, StringComparison.OrdinalIgnoreCase))
             methodForRoute = "GET";
-        }
 
         // Find route
         var route = _router.FindRoute(methodForRoute.AsSpan(), request.Path.AsSpan());
@@ -96,9 +94,9 @@ public sealed partial class EffinitiveServer
                 allowedMethods.Add("OPTIONS");
 
                 response.StatusCode = 405;
-                response.Headers["Allow"] = string.Join(", ", allowedMethods);
+                response.Headers[HeaderNames.Allow] = string.Join(", ", allowedMethods);
                 response.Body = System.Text.Encoding.UTF8.GetBytes("Method Not Allowed");
-                response.ContentType = "text/plain";
+                response.ContentType = MediaTypes.TextPlain;
                 return;
             }
 
@@ -109,7 +107,7 @@ public sealed partial class EffinitiveServer
             {
                 response.StatusCode = 400;
                 response.Body = System.Text.Encoding.UTF8.GetBytes($"Bad Request: unknown method {request.Method}");
-                response.ContentType = "text/plain";
+                response.ContentType = MediaTypes.TextPlain;
                 response.KeepAlive = false;
                 return;
             }
@@ -152,9 +150,7 @@ public sealed partial class EffinitiveServer
                 if (middlewareHeaders != null)
                 {
                     foreach (var header in middlewareHeaders)
-                    {
                         response.Headers[header.Key] = header.Value;
-                    }
                 }
                 return;
             }
@@ -171,19 +167,8 @@ public sealed partial class EffinitiveServer
         }
         catch (Exception ex) when (ex is not HttpParseException)
         {
-            if (!_isProduction)
-            {
-                Console.WriteLine($"❌ EXCEPTION: {ex.GetType().Name}");
-                Console.WriteLine($"   Message: {ex.Message}");
-                Console.WriteLine($"   StackTrace: {ex.StackTrace}");
-                if (ex.InnerException != null)
-                    Console.WriteLine($"   InnerException: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
-            }
-
-            response.StatusCode = 500;
-            var problemDetails = ProblemDetails.FromException(ex);
-            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-            response.ContentType = "application/problem+json";
+            LogException(ex);
+            WriteExceptionResponse(response, ex);
         }
     }
 
@@ -217,43 +202,22 @@ public sealed partial class EffinitiveServer
             var endpoint = scopedProvider.GetService(route.EndpointType);
             if (endpoint == null)
             {
-                response.StatusCode = 500;
-                var pd = ProblemDetails.ForStatusCode(500, $"Failed to resolve endpoint {route.EndpointType.Name}");
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
-                response.ContentType = "application/problem+json";
+                WriteProblemResponse(response, 500, $"Failed to resolve endpoint {route.EndpointType.Name}");
                 return true;
             }
 
             invoker.SetHttpContext(endpoint, request);
 
             object? requestObj = null;
-            if (!invoker.IsNoRequest)
+            if (!invoker.IsNoRequest && invoker.RequestType != typeof(EmptyRequest))
             {
-                if (request.ContentLength > 0 && request.Body.Length > 0 && invoker.RequestType != typeof(EmptyRequest))
-                {
-                    try
-                    {
-                        requestObj = JsonSerializer.Deserialize(request.Body.Span, invoker.RequestType, _options.JsonOptions);
-                    }
-                    catch (Exception ex)
-                    {
-                        response.StatusCode = 400;
-                        var pd = ProblemDetails.FromException(ex);
-                        pd.Title = "Bad Request";
-                        pd.Status = 400;
-                        response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
-                        response.ContentType = "application/problem+json";
-                        return true;
-                    }
-                }
-                else
-                {
-                    requestObj = Activator.CreateInstance(invoker.RequestType);
-                }
+                var (ok, value) = await DeserializeBodyAsync(request, invoker.RequestType, response, cancellationToken);
+                if (!ok) return true;
+                requestObj = value;
             }
 
             var responseObj = await invoker.InvokeAsync(endpoint, requestObj, cancellationToken);
-            var contentType = invoker.GetContentType(endpoint) ?? "application/json";
+            var contentType = invoker.GetContentType(endpoint) ?? MediaTypes.ApplicationJson;
             SerializeResponse(response, responseObj, contentType);
             return true;
         }
@@ -298,10 +262,7 @@ public sealed partial class EffinitiveServer
                     var endpoint = scopedProvider.GetService(route.EndpointType);
                     if (endpoint == null)
                     {
-                        response.StatusCode = 500;
-                        var pd = ProblemDetails.ForStatusCode(500, $"Failed to resolve endpoint {route.EndpointType.Name}");
-                        response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
-                        response.ContentType = "application/problem+json";
+                        WriteProblemResponse(response, 500, $"Failed to resolve endpoint {route.EndpointType.Name}");
                         return response;
                     }
 
@@ -321,31 +282,11 @@ public sealed partial class EffinitiveServer
 
                     // Deserialize request body
                     object? requestObj = null;
-                    if (invoker.IsNoRequest)
+                    if (!invoker.IsNoRequest && invoker.RequestType != typeof(EmptyRequest))
                     {
-                        requestObj = null;
-                    }
-                    else if (request.ContentLength > 0 && request.Body.Length > 0 &&
-                             invoker.RequestType != typeof(EmptyRequest))
-                    {
-                        try
-                        {
-                            requestObj = JsonSerializer.Deserialize(request.Body.Span, invoker.RequestType, _options.JsonOptions);
-                        }
-                        catch (Exception ex)
-                        {
-                            response.StatusCode = 400;
-                            var pd = ProblemDetails.FromException(ex);
-                            pd.Title = "Bad Request";
-                            pd.Status = 400;
-                            response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
-                            response.ContentType = "application/problem+json";
-                            return response;
-                        }
-                    }
-                    else
-                    {
-                        requestObj = Activator.CreateInstance(invoker.RequestType);
+                        var (ok, value) = await DeserializeBodyAsync(request, invoker.RequestType, response, cancellationToken);
+                        if (!ok) return response;
+                        requestObj = value;
                     }
 
                     // Bind route parameters — compiled setters, no PropertyInfo.SetValue/boxing
@@ -371,7 +312,7 @@ public sealed partial class EffinitiveServer
                     var responseObj = await invoker.InvokeAsync(endpoint, requestObj, cancellationToken);
 
                     // ContentType — compiled getter, no GetProperty/GetValue
-                    var contentType = invoker.GetContentType(endpoint) ?? "application/json";
+                    var contentType = invoker.GetContentType(endpoint) ?? MediaTypes.ApplicationJson;
 
                     SerializeResponse(response, responseObj, contentType);
                     return response;
@@ -384,28 +325,13 @@ public sealed partial class EffinitiveServer
             }
             finally
             {
-                // Dispose scope if created
                 scope?.Dispose();
             }
         }
         catch (Exception ex) when (ex is not HttpParseException)
         {
-            // Log exception details only in debug mode
-            if (!_isProduction)
-            {
-                Console.WriteLine($"❌ EXCEPTION: {ex.GetType().Name}");
-                Console.WriteLine($"   Message: {ex.Message}");
-                Console.WriteLine($"   StackTrace: {ex.StackTrace}");
-                if (ex.InnerException != null)
-                {
-                    Console.WriteLine($"   InnerException: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
-                }
-            }
-
-            response.StatusCode = 500;
-            var problemDetails = ProblemDetails.FromException(ex);
-            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-            response.ContentType = "application/problem+json";
+            LogException(ex);
+            WriteExceptionResponse(response, ex);
         }
 
         return response;
@@ -433,10 +359,7 @@ public sealed partial class EffinitiveServer
             endpoint = scopedProvider.GetService(route.EndpointType);
             if (endpoint == null)
             {
-                response.StatusCode = 500;
-                var problemDetails = ProblemDetails.ForStatusCode(500, $"Failed to resolve endpoint {route.EndpointType.Name}");
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                response.ContentType = "application/problem+json";
+                WriteProblemResponse(response, 500, $"Failed to resolve endpoint {route.EndpointType.Name}");
                 return response;
             }
 
@@ -469,10 +392,7 @@ public sealed partial class EffinitiveServer
                     return response;
                 }
 
-                response.StatusCode = 500;
-                var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not have public HandleAsync method");
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                response.ContentType = "application/problem+json";
+                WriteProblemResponse(response, 500, "Endpoint does not have public HandleAsync method");
                 return response;
             }
 
@@ -483,10 +403,7 @@ public sealed partial class EffinitiveServer
 
             if (endpointInterface == null)
             {
-                response.StatusCode = 500;
-                var problemDetails = ProblemDetails.ForStatusCode(500, "Endpoint does not implement IEndpoint<,> or IAsyncEndpoint<,>");
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                response.ContentType = "application/problem+json";
+                WriteProblemResponse(response, 500, "Endpoint does not implement IEndpoint<,> or IAsyncEndpoint<,>");
                 return response;
             }
 
@@ -500,10 +417,7 @@ public sealed partial class EffinitiveServer
 
             if (genericArgs.Length < 3)
             {
-                response.StatusCode = 500;
-                var problemDetails = ProblemDetails.ForStatusCode(500, "Handler does not have correct generic arguments");
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                response.ContentType = "application/problem+json";
+                WriteProblemResponse(response, 500, "Handler does not have correct generic arguments");
                 return response;
             }
 
@@ -511,44 +425,23 @@ public sealed partial class EffinitiveServer
         }
         else
         {
-            response.StatusCode = 500;
-            var problemDetails = ProblemDetails.ForStatusCode(500, "No handler or endpoint type configured for route");
-            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-            response.ContentType = "application/problem+json";
+            WriteProblemResponse(response, 500, "No handler or endpoint type configured for route");
             return response;
         }
 
         if (requestType == null)
         {
-            response.StatusCode = 500;
-            var problemDetails = ProblemDetails.ForStatusCode(500, "Could not determine request type");
-            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-            response.ContentType = "application/problem+json";
+            WriteProblemResponse(response, 500, "Could not determine request type");
             return response;
         }
 
         // Deserialize request body
         object? requestObj = null;
-        if (request.ContentLength > 0 && request.Body.Length > 0 &&
-            requestType != typeof(EmptyRequest))
+        if (requestType != typeof(EmptyRequest))
         {
-            try
-            {
-                requestObj = JsonSerializer.Deserialize(request.Body.Span, requestType, _options.JsonOptions);
-            }
-            catch (Exception ex)
-            {
-                var problemDetails = ProblemDetails.FromException(ex);
-                problemDetails.Title = "Bad Request";
-                problemDetails.Status = 400;
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                response.ContentType = "application/problem+json";
-                return response;
-            }
-        }
-        else
-        {
-            requestObj = Activator.CreateInstance(requestType);
+            var (ok, value) = await DeserializeBodyAsync(request, requestType, response, cancellationToken);
+            if (!ok) return response;
+            requestObj = value;
         }
 
         // Populate route parameters if any
@@ -586,9 +479,7 @@ public sealed partial class EffinitiveServer
 
             var httpContextProperty = route.EndpointType?.GetProperty("HttpContext");
             if (httpContextProperty != null && httpContextProperty.CanWrite)
-            {
                 httpContextProperty.SetValue(endpoint, request);
-            }
         }
 
         // Validate request if ValidationEnabled flag is set on the request
@@ -610,9 +501,7 @@ public sealed partial class EffinitiveServer
                     if (!success)
                     {
                         var errorProperty = validationResult?.GetType().GetProperty("Error");
-                        var problemDetails = errorProperty?.GetValue(validationResult) as Routya.ResultKit.ProblemDetails;
-
-                        if (problemDetails != null)
+                        if (errorProperty?.GetValue(validationResult) is Routya.ResultKit.ProblemDetails problemDetails)
                         {
                             response.StatusCode = problemDetails.Status ?? 400;
                             response.ContentType = "application/problem+json";
@@ -649,10 +538,7 @@ public sealed partial class EffinitiveServer
             }
             else
             {
-                response.StatusCode = 500;
-                var problemDetails = ProblemDetails.ForStatusCode(500, $"Unexpected parameter count: {parameters.Length}");
-                response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-                response.ContentType = "application/problem+json";
+                WriteProblemResponse(response, 500, $"Unexpected parameter count: {parameters.Length}");
                 return response;
             }
         }
@@ -662,10 +548,7 @@ public sealed partial class EffinitiveServer
         }
         else
         {
-            response.StatusCode = 500;
-            var problemDetails = ProblemDetails.ForStatusCode(500, "No handler or method to invoke");
-            response.Body = JsonSerializer.SerializeToUtf8Bytes(problemDetails, _options.JsonOptions);
-            response.ContentType = "application/problem+json";
+            WriteProblemResponse(response, 500, "No handler or method to invoke");
             return response;
         }
 
@@ -685,8 +568,7 @@ public sealed partial class EffinitiveServer
             else if (resultType.IsGenericType && resultType.GetGenericTypeDefinition() == typeof(ValueTask<>))
             {
                 var asTaskMethod = resultType.GetMethod("AsTask");
-                var vTask = asTaskMethod?.Invoke(result, null) as Task;
-                if (vTask != null)
+                if (asTaskMethod?.Invoke(result, null) is Task vTask)
                 {
                     await vTask;
                     var resultProperty = vTask.GetType().GetProperty("Result");
@@ -696,7 +578,7 @@ public sealed partial class EffinitiveServer
         }
 
         // Serialize response
-        var contentType = "application/json";
+        var contentType = MediaTypes.ApplicationJson;
         if (endpoint != null)
         {
             var contentTypeProperty = route.EndpointType?.GetProperty("ContentType",
@@ -714,4 +596,39 @@ public sealed partial class EffinitiveServer
 
         return response;
     }
+
+    // Reads and deserializes the request body. Returns (false, null) on a 400 JSON parse error,
+    // with the error already written into response.
+    private async ValueTask<(bool ok, object? value)> DeserializeBodyAsync(
+        HttpRequest request, Type requestType, HttpResponse response, CancellationToken ct)
+    {
+        var bodyBytes = await request.ReadBodyAsync(ct);
+        if (bodyBytes.IsEmpty)
+            return (true, CreateDefaultRequestObject(requestType));
+
+        if (requestType == typeof(string))
+            return (true, Encoding.UTF8.GetString(bodyBytes.Span));
+        if (requestType == typeof(byte[]))
+            return (true, (object)bodyBytes.ToArray());
+
+        try
+        {
+            return (true, JsonSerializer.Deserialize(bodyBytes.Span, requestType, _options.JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            response.StatusCode = 400;
+            var pd = ProblemDetails.FromException(ex);
+            pd.Title = "Bad Request";
+            pd.Status = 400;
+            response.Body = JsonSerializer.SerializeToUtf8Bytes(pd, _options.JsonOptions);
+            response.ContentType = "application/problem+json";
+            return (false, null);
+        }
+    }
+
+    private static object? CreateDefaultRequestObject(Type requestType)
+        => requestType == typeof(string) ? string.Empty
+         : requestType == typeof(byte[]) ? (object)Array.Empty<byte>()
+         : Activator.CreateInstance(requestType);
 }

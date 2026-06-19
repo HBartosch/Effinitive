@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-06-11
+
+### Added
+- **`HttpRequest.ReadBodyAsync()`** — reads the full request body transparently, whether the body is already buffered or deferred behind a `ChunkedBodyStream`. Endpoints no longer need to check `BodyDeferred` or interact with `BodyStream` directly; body access is now a single `await request.ReadBodyAsync()` call.
+- **`HttpRequest.CountBodyBytesAsync()`** — drains the body stream and returns the total byte count without materializing the full payload. Useful for upload-size validation endpoints.
+- **`HttpConstants.cs`** — new `HeaderNames`, `MediaTypes`, `HttpVersions`, `HttpMethods`, and `HeaderValues` static const classes consolidating all string literals that were previously scattered as inline string constants throughout the framework.
+
+### Changed
+- **`EndpointBase<TRequest, TResponse>` body deserialization** — all three code paths (compiled invoker, WebSocket, legacy reflection path) now funnel through a single `DeserializeBodyAsync` helper that calls `ReadBodyAsync` internally. Typed endpoints receiving chunked or large deferred bodies are drained automatically before JSON deserialization — no endpoint boilerplate needed.
+- **`string` and `byte[]` request types** — endpoints typed as `EndpointBase<string, …>` or `EndpointBase<byte[], …>` now receive the raw UTF-8 body string or raw byte array respectively, instead of attempting JSON deserialization.
+- **`HandleErrorAsync` is no longer async** — the method no longer returned a `Task` (it was `await Task.CompletedTask`); converted to `void` to eliminate the unnecessary state machine.
+- **`WriteProblemResponse` / `WriteExceptionResponse` / `LogException` helpers** — extracted from three duplicated inline blocks across `RequestHandling.cs` and `Helpers.cs` into named helpers on `EffinitiveServer`.
+- All header name, media type, HTTP method, and header value string literals replaced with the new `HeaderNames.*`, `MediaTypes.*`, `HttpMethods.*`, and `HeaderValues.*` constants throughout `ConnectionHandling`, `RequestHandling`, `RequestValidation`, `ResponseCompressionMiddleware`, `StaticFileHandler`, and `EndpointBase`.
+
 ## [2.1.1] - 2026-06-09
 
 ### Performance

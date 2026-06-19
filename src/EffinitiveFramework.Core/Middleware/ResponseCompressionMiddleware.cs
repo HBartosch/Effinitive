@@ -24,12 +24,12 @@ public class ResponseCompressionMiddleware : IMiddleware
         _minimumSize = minimumSize;
         _compressibleContentTypes = compressibleContentTypes ?? new[]
         {
-            "application/json",
-            "text/plain",
-            "text/html",
-            "text/css",
-            "text/javascript",
-            "application/javascript",
+            MediaTypes.ApplicationJson,
+            MediaTypes.TextPlain,
+            MediaTypes.TextHtml,
+            MediaTypes.TextCss,
+            MediaTypes.TextJavaScript,
+            MediaTypes.ApplicationJavaScript,
             "application/xml",
             "text/xml"
         };
@@ -57,8 +57,8 @@ public class ResponseCompressionMiddleware : IMiddleware
         // Don't compress here — just mark the response so the writer can do
         // serialize + compress in one pooled pipeline (like Kestrel).
         response.GzipCompressionLevel = _compressionLevel;
-        response.Headers["Content-Encoding"] = "gzip";
-        response.Headers["Vary"] = "Accept-Encoding";
+        response.Headers[HeaderNames.ContentEncoding] = HeaderValues.Gzip;
+        response.Headers[HeaderNames.Vary] = HeaderNames.AcceptEncoding;
         return response;
     }
 
@@ -81,14 +81,14 @@ public class ResponseCompressionMiddleware : IMiddleware
 
         // Don't compress if already encoded
         var headers = response.HeadersOrNull;
-        if (headers != null && headers.ContainsKey("Content-Encoding"))
+        if (headers != null && headers.ContainsKey(HeaderNames.ContentEncoding))
             return false;
 
         // Check if client accepts gzip
-        if (!request.Headers.TryGetValue("Accept-Encoding", out var acceptEncoding))
+        if (!request.Headers.TryGetValue(HeaderNames.AcceptEncoding, out var acceptEncoding))
             return false;
 
-        if (acceptEncoding.IndexOf("gzip", StringComparison.OrdinalIgnoreCase) < 0)
+        if (acceptEncoding.IndexOf(HeaderValues.Gzip, StringComparison.OrdinalIgnoreCase) < 0)
             return false;
 
         return IsCompressibleContentType(response.ContentType);

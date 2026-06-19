@@ -159,6 +159,47 @@ public sealed class HttpRequest
     }
 
     /// <summary>
+    /// Reads the full request body, handling both buffered and deferred (chunked / large) bodies.
+    /// For small bodies the existing <see cref="Body"/> buffer is returned directly without copying.
+    /// For deferred bodies the stream is drained into a new byte array.
+    /// </summary>
+    public async ValueTask<ReadOnlyMemory<byte>> ReadBodyAsync(CancellationToken ct = default)
+    {
+        if (!BodyDeferred || BodyStream == null)
+            return Body;
+        using var ms = new MemoryStream(4096);
+        var buf = ArrayPool<byte>.Shared.Rent(65536);
+        try
+        {
+            int r;
+            while ((r = await BodyStream.ReadAsync(buf.AsMemory(), ct)) > 0)
+                ms.Write(buf, 0, r);
+        }
+        finally { ArrayPool<byte>.Shared.Return(buf); }
+        return ms.ToArray().AsMemory();
+    }
+
+    /// <summary>
+    /// Counts the total bytes in the request body without materializing them.
+    /// Ideal for upload endpoints that only need the size, not the content.
+    /// </summary>
+    public async ValueTask<long> CountBodyBytesAsync(CancellationToken ct = default)
+    {
+        if (!BodyDeferred || BodyStream == null)
+            return Body.Length;
+        var buf = ArrayPool<byte>.Shared.Rent(65536);
+        long count = 0;
+        try
+        {
+            int r;
+            while ((r = await BodyStream.ReadAsync(buf.AsMemory(), ct)) > 0)
+                count += r;
+        }
+        finally { ArrayPool<byte>.Shared.Return(buf); }
+        return count;
+    }
+
+    /// <summary>
     /// Reset the request for reuse from object pool
     /// </summary>
     public void Reset()

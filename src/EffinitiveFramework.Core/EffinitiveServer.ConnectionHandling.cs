@@ -54,7 +54,7 @@ public sealed partial class EffinitiveServer
                         StatusCode = parseEx.StatusCode,
                         KeepAlive = parseEx.KeepAliveAllowed,
                         Body = System.Text.Encoding.UTF8.GetBytes(parseEx.Message),
-                        ContentType = "text/plain"
+                        ContentType = MediaTypes.TextPlain
                     };
                     await connection.WriteResponseAsync(errorResponse, cancellationToken);
                     if (!parseEx.KeepAliveAllowed)
@@ -68,7 +68,7 @@ public sealed partial class EffinitiveServer
                         StatusCode = 413,
                         KeepAlive = false,
                         Body = System.Text.Encoding.UTF8.GetBytes("Payload too large"),
-                        ContentType = "text/plain"
+                        ContentType = MediaTypes.TextPlain
                     };
                     await connection.WriteResponseAsync(errorResponse, cancellationToken);
                     break;
@@ -141,7 +141,7 @@ public sealed partial class EffinitiveServer
                         response.StatusCode = parseEx.StatusCode;
                         response.KeepAlive = false;
                         response.Body = System.Text.Encoding.UTF8.GetBytes(parseEx.Message);
-                        response.ContentType = "text/plain";
+                        response.ContentType = MediaTypes.TextPlain;
                         await connection.WriteResponseAsync(response, cancellationToken, flush: true);
                         keepAlive = false;
                         break;
@@ -149,7 +149,7 @@ public sealed partial class EffinitiveServer
                     catch (Exception ex)
                     {
                         // Return error response
-                        await HandleErrorAsync(ex, request, response);
+                        HandleErrorAsync(ex, request, response);
                     }
 
                     // Apply conditional response headers (ETag, Last-Modified, 304)
@@ -205,7 +205,7 @@ public sealed partial class EffinitiveServer
                             StatusCode = parseEx.StatusCode,
                             KeepAlive = false,
                             Body = System.Text.Encoding.UTF8.GetBytes(parseEx.Message),
-                            ContentType = "text/plain"
+                            ContentType = MediaTypes.TextPlain
                         };
                         await connection.WriteResponseAsync(errResp, cancellationToken, flush: false);
                         keepAlive = false;

@@ -131,14 +131,14 @@ public sealed class StaticFileHandler
         if (wantsBrotli)
         {
             response.Body = cached.BrotliContent!;
-            response.Headers["Content-Encoding"] = "br";
-            response.Headers["Vary"] = "Accept-Encoding";
+            response.Headers[HeaderNames.ContentEncoding] = HeaderValues.Brotli;
+            response.Headers[HeaderNames.Vary] = HeaderNames.AcceptEncoding;
         }
         else if (useGzip)
         {
             response.Body = cached.GzipContent!;
-            response.Headers["Content-Encoding"] = "gzip";
-            response.Headers["Vary"] = "Accept-Encoding";
+            response.Headers[HeaderNames.ContentEncoding] = HeaderValues.Gzip;
+            response.Headers[HeaderNames.Vary] = HeaderNames.AcceptEncoding;
         }
         else
         {
@@ -146,7 +146,7 @@ public sealed class StaticFileHandler
         }
 
         if (_cacheControl != null)
-            response.Headers["Cache-Control"] = _cacheControl;
+            response.Headers[HeaderNames.CacheControl] = _cacheControl;
 
         return true;
     }
@@ -178,8 +178,8 @@ public sealed class StaticFileHandler
     }
 
     private static bool IsCompressibleContentType(string contentType) =>
-        contentType is "application/json" or "text/plain" or "text/html" or
-                       "text/css" or "text/javascript" or "application/javascript" or
+        contentType is MediaTypes.ApplicationJson or MediaTypes.TextPlain or MediaTypes.TextHtml or
+                       MediaTypes.TextCss or MediaTypes.TextJavaScript or MediaTypes.ApplicationJavaScript or
                        "application/xml" or "text/xml" or "image/svg+xml";
 
     private static string GetMimeType(string extension) => extension.ToLowerInvariant() switch

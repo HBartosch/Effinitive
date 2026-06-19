@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>2.1.1</Version>
+    <Version>2.1.2</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,7 +19,7 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v2.1.1: Replace O(n²) TryParseChunked with streaming ChunkedBodyStream (PipeReader-based, zero-copy). Strict RFC 9112 chunk-size validation: no leading/trailing OWS, no 0x prefix, no +/_ in hex digits, overflow check. Bare LF detection in chunk framing and trailers. Chunk extension validation: rejects bare semicolons, invalid RFC 9110 token chars in ext-name, control chars in ext-val. Validates CRLF terminator after each chunk data section. All violations throw HttpParseException(400) and propagate correctly to the connection handler for 400/close responses instead of 500.</PackageReleaseNotes>
+    <PackageReleaseNotes>v2.1.2: Typed endpoints (EndpointBase&lt;TRequest,TResponse&gt;) now transparently bind chunked and large deferred bodies — the framework drains BodyStream before deserialization so no endpoint boilerplate is needed. string and byte[] request types receive the raw body instead of JSON-deserialized values. Added HttpRequest.ReadBodyAsync() and CountBodyBytesAsync() for endpoints that need manual body access.</PackageReleaseNotes>
     <RepositoryType>git</RepositoryType>
     <Copyright>Copyright (c) 2025 Henry Bartosch</Copyright>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>

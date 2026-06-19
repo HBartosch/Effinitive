@@ -28,7 +28,7 @@ public abstract class NoRequestEndpointBase<TResponse> : IEndpoint<EmptyRequest,
     /// Content type for the response (defaults to application/json)
     /// Override this to return different content types (e.g., "text/plain", "text/html")
     /// </summary>
-    protected virtual string ContentType => "application/json";
+    protected virtual string ContentType => MediaTypes.ApplicationJson;
 
     /// <summary>
     /// Handle the endpoint request without a request body
@@ -77,7 +77,7 @@ public abstract class EndpointBase<TRequest, TResponse> : IEndpoint<TRequest, TR
     /// Content type for the response (defaults to application/json)
     /// Override this to return different content types (e.g., "text/plain", "text/html")
     /// </summary>
-    protected virtual string ContentType => "application/json";
+    protected virtual string ContentType => MediaTypes.ApplicationJson;
 
     /// <summary>
     /// Handle the endpoint request using ValueTask (optimal for synchronous/cached operations)
@@ -120,7 +120,7 @@ public abstract class AsyncEndpointBase<TRequest, TResponse> : IAsyncEndpoint<TR
     /// Content type for the response (defaults to application/json)
     /// Override this to return different content types (e.g., "text/plain", "text/html")
     /// </summary>
-    protected virtual string ContentType => "application/json";
+    protected virtual string ContentType => MediaTypes.ApplicationJson;
 
     /// <summary>
     /// Handle the endpoint request using Task (optimal for true async I/O operations)
@@ -162,7 +162,7 @@ public abstract class NoRequestAsyncEndpointBase<TResponse> : IAsyncEndpoint<Emp
     /// Content type for the response (defaults to application/json)
     /// Override this to return different content types (e.g., "text/plain", "text/html")
     /// </summary>
-    protected virtual string ContentType => "application/json";
+    protected virtual string ContentType => MediaTypes.ApplicationJson;
 
     /// <summary>
     /// Handle the endpoint request without a request body using Task (optimal for true async I/O operations)

@@ -32,17 +32,17 @@ public sealed partial class EffinitiveServer
     internal ValidationResult ValidateRequest(HttpRequest request)
     {
         // RFC 9112 §2.3: Drop connection for unsupported HTTP major/minor versions
-        if (request.HttpVersion != "HTTP/1.1" && request.HttpVersion != "HTTP/1.0")
+        if (request.HttpVersion != HttpVersions.Http11 && request.HttpVersion != HttpVersions.Http10)
             return ValidationResult.Close();
 
         // Reject HTTP/1.0 without Host header (security: prevent host confusion)
-        if (request.HttpVersion == "HTTP/1.0" && !request.Headers.ContainsKey("Host"))
+        if (request.HttpVersion == HttpVersions.Http10 && !request.Headers.ContainsKey(HeaderNames.Host))
         {
             return ValidationResult.Close(new HttpResponse
             {
                 StatusCode = 400, KeepAlive = false,
                 Body = System.Text.Encoding.UTF8.GetBytes("Missing Host header"),
-                ContentType = "text/plain"
+                ContentType = MediaTypes.TextPlain
             });
         }
 
@@ -50,7 +50,7 @@ public sealed partial class EffinitiveServer
         if (request.Items != null &&
             request.Items.TryGetValue("AbsoluteFormHost", out var absHostObj) &&
             absHostObj is string absHost &&
-            request.Headers.TryGetValue("Host", out var hostVal))
+            request.Headers.TryGetValue(HeaderNames.Host, out var hostVal))
         {
             static string StripPort(string h) { var i = h.LastIndexOf(':'); return i > 0 ? h[..i] : h; }
             if (!StripPort(absHost).Equals(StripPort(hostVal), StringComparison.OrdinalIgnoreCase))
@@ -59,13 +59,13 @@ public sealed partial class EffinitiveServer
                 {
                     StatusCode = 400, KeepAlive = false,
                     Body = System.Text.Encoding.UTF8.GetBytes("Absolute-form URI host does not match Host header"),
-                    ContentType = "text/plain"
+                    ContentType = MediaTypes.TextPlain
                 });
             }
         }
 
         // Reject Range header with excessive ranges (CVE-2011-3192 class DoS)
-        if (request.Headers.TryGetValue("Range", out var rangeVal) &&
+        if (request.Headers.TryGetValue(HeaderNames.Range, out var rangeVal) &&
             rangeVal.Split(',').Length > 100)
         {
             return ValidationResult.Close();
@@ -74,53 +74,53 @@ public sealed partial class EffinitiveServer
         // Reject GET/HEAD/OPTIONS with Content-Length body (smuggling vector)
         if (request.ContentLength > 0)
         {
-            if (request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase))
+            if (request.Method.Equals(HttpMethods.Get, StringComparison.OrdinalIgnoreCase))
             {
                 return ValidationResult.Close(new HttpResponse
                 {
                     StatusCode = 400, KeepAlive = false,
                     Body = System.Text.Encoding.UTF8.GetBytes("GET with request body not accepted"),
-                    ContentType = "text/plain"
+                    ContentType = MediaTypes.TextPlain
                 });
             }
-            if (request.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
+            if (request.Method.Equals(HttpMethods.Head, StringComparison.OrdinalIgnoreCase))
             {
                 return ValidationResult.Close(new HttpResponse
                 {
                     StatusCode = 400, KeepAlive = false,
                     Body = System.Text.Encoding.UTF8.GetBytes("HEAD with request body not accepted"),
-                    ContentType = "text/plain"
+                    ContentType = MediaTypes.TextPlain
                 });
             }
-            if (request.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+            if (request.Method.Equals(HttpMethods.Options, StringComparison.OrdinalIgnoreCase))
             {
                 return ValidationResult.Close(new HttpResponse
                 {
                     StatusCode = 400, KeepAlive = false,
                     Body = System.Text.Encoding.UTF8.GetBytes("OPTIONS with request body not accepted"),
-                    ContentType = "text/plain"
+                    ContentType = MediaTypes.TextPlain
                 });
             }
         }
 
         // Close connection after POST with CL:0 (prevent body-poison attacks)
-        if (request.Method.Equals("POST", StringComparison.OrdinalIgnoreCase) && request.ContentLength == 0)
+        if (request.Method.Equals(HttpMethods.Post, StringComparison.OrdinalIgnoreCase) && request.ContentLength == 0)
         {
             request.KeepAlive = false;
         }
 
         // HTTP/1.0 defaults to Connection: close unless explicit keep-alive
-        if (request.HttpVersion == "HTTP/1.0")
+        if (request.HttpVersion == HttpVersions.Http10)
         {
-            if (!request.Headers.TryGetValue("Connection", out var connHeader) ||
-                !connHeader.Equals("keep-alive", StringComparison.OrdinalIgnoreCase))
+            if (!request.Headers.TryGetValue(HeaderNames.Connection, out var connHeader) ||
+                !connHeader.Equals(HeaderValues.KeepAlive, StringComparison.OrdinalIgnoreCase))
             {
                 request.KeepAlive = false;
             }
         }
 
         // RFC 9110 §10.1.1: Reject unknown Expect header values with 417
-        if (request.Headers.TryGetValue("Expect", out var expectValue))
+        if (request.Headers.TryGetValue(HeaderNames.Expect, out var expectValue))
         {
             if (!expectValue.Equals("100-continue", StringComparison.OrdinalIgnoreCase))
             {
@@ -129,7 +129,7 @@ public sealed partial class EffinitiveServer
                     StatusCode = 417,
                     KeepAlive = request.KeepAlive,
                     Body = System.Text.Encoding.UTF8.GetBytes("Expectation Failed"),
-                    ContentType = "text/plain"
+                    ContentType = MediaTypes.TextPlain
                 };
                 return request.KeepAlive
                     ? ValidationResult.Respond(expectResponse)
@@ -140,16 +140,16 @@ public sealed partial class EffinitiveServer
         }
 
         // Content negotiation: reject unsupported Accept types (RFC 9110 §12.5.1)
-        if (request.Headers.TryGetValue("Accept", out var acceptVal) &&
+        if (request.Headers.TryGetValue(HeaderNames.Accept, out var acceptVal) &&
             !acceptVal.Contains("*/*") &&
             !acceptVal.Contains("text/") &&
-            !acceptVal.Contains("application/json"))
+            !acceptVal.Contains(MediaTypes.ApplicationJson))
         {
             var notAcceptableResponse = new HttpResponse
             {
                 StatusCode = 406, KeepAlive = request.KeepAlive,
                 Body = System.Text.Encoding.UTF8.GetBytes("Not Acceptable"),
-                ContentType = "text/plain"
+                ContentType = MediaTypes.TextPlain
             };
             return request.KeepAlive
                 ? ValidationResult.Respond(notAcceptableResponse)
@@ -164,38 +164,38 @@ public sealed partial class EffinitiveServer
     /// </summary>
     internal void ApplyConditionalHeaders(HttpRequest request, HttpResponse response, bool isHead)
     {
-        if ((!request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) && !isHead)
+        if ((!request.Method.Equals(HttpMethods.Get, StringComparison.OrdinalIgnoreCase) && !isHead)
             || response.StatusCode < 200 || response.StatusCode >= 300
             || response.StatusCode == 204
             || response.IsStreaming)
             return;
 
         // Generate ETag from response body if not already set
-        if (!response.Headers.ContainsKey("ETag"))
+        if (!response.Headers.ContainsKey(HeaderNames.ETag))
         {
             var hash = SHA256.HashData(response.Body ?? Array.Empty<byte>());
-            response.Headers["ETag"] = $"\"{Convert.ToHexString(hash, 0, 8).ToLowerInvariant()}\"";
+            response.Headers[HeaderNames.ETag] = $"\"{Convert.ToHexString(hash, 0, 8).ToLowerInvariant()}\"";
         }
 
         // Set Last-Modified if not already set
-        if (!response.Headers.ContainsKey("Last-Modified"))
+        if (!response.Headers.ContainsKey(HeaderNames.LastModified))
         {
-            response.Headers["Last-Modified"] = _serverStartTimeRfc;
+            response.Headers[HeaderNames.LastModified] = _serverStartTimeRfc;
         }
 
         // Check If-None-Match (takes precedence per RFC 9110 §13.1.2)
-        if (request.Headers.TryGetValue("If-None-Match", out var ifNoneMatch))
+        if (request.Headers.TryGetValue(HeaderNames.IfNoneMatch, out var ifNoneMatch))
         {
-            if (WeakETagMatch(ifNoneMatch, response.Headers["ETag"]))
+            if (WeakETagMatch(ifNoneMatch, response.Headers[HeaderNames.ETag]))
             {
-                var etag = response.Headers["ETag"];
+                var etag = response.Headers[HeaderNames.ETag];
                 response.StatusCode = 304;
                 response.Body = null;
-                response.Headers["ETag"] = etag;
+                response.Headers[HeaderNames.ETag] = etag;
             }
         }
         // If-Modified-Since only when If-None-Match is absent (RFC 9110 §13.1.3)
-        else if (request.Headers.TryGetValue("If-Modified-Since", out var ifModifiedSince))
+        else if (request.Headers.TryGetValue(HeaderNames.IfModifiedSince, out var ifModifiedSince))
         {
             var formats = new[] { "R", "ddd, dd MMM yyyy HH:mm:ss 'GMT'", "dddd, dd-MMM-yy HH:mm:ss 'GMT'", "ddd MMM  d HH:mm:ss yyyy", "ddd MMM dd HH:mm:ss yyyy" };
             if (DateTime.TryParseExact(ifModifiedSince.Trim(), formats,
@@ -205,10 +205,10 @@ public sealed partial class EffinitiveServer
                 && sinceDate <= DateTime.UtcNow  // RFC 9110 §13.1.3: ignore if in the future
                 && _serverStartTime <= sinceDate)
             {
-                var etag = response.Headers.TryGetValue("ETag", out var e) ? e : null;
+                var etag = response.Headers.TryGetValue(HeaderNames.ETag, out var e) ? e : null;
                 response.StatusCode = 304;
                 response.Body = null;
-                if (etag != null) response.Headers["ETag"] = etag;
+                if (etag != null) response.Headers[HeaderNames.ETag] = etag;
             }
         }
     }
