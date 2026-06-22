@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-06-19
+
+### Changed
+- **Static file serving rewritten to stream from disk** — `StaticFileHandler` no longer pre-loads the
+  entire content directory into a `FrozenDictionary` in the managed heap at startup. Files are now
+  resolved and streamed from the filesystem per request via the new `HttpResponse.BodyStream` /
+  `BodyStreamLength`, so memory use is bounded regardless of content size and responses always reflect
+  what is on disk (added/changed/deleted files are picked up without a restart).
+
+### Added
+- **Static files — conditional requests** — `ETag` (derived from last-write-time and length) and
+  `Last-Modified` are emitted, and `If-None-Match` / `If-Modified-Since` produce `304 Not Modified`.
+- **Static files — range requests** — single-range `Range` (including suffix ranges) returns
+  `206 Partial Content` with `Content-Range`; unsatisfiable ranges return `416`; `If-Range` is honored;
+  `Accept-Ranges: bytes` is advertised for the identity representation.
+- **Static files — correct `Accept-Encoding` negotiation** — pre-generated `.br` / `.gz` sidecars are
+  selected through `ContentNegotiation.SelectEncoding`, which respects q-values (e.g. `br;q=0` is no
+  longer served) instead of the previous substring scan. `Vary: Accept-Encoding` is set whenever a
+  compressed sibling exists.
+- **`HttpResponse.BodyStream` / `BodyStreamLength`** — a known-length stream body. On HTTP/1.1 the
+  response writer copies it straight to the pipe (flushing periodically) and disposes it, without
+  buffering the payload in memory; on HTTP/2 and HTTP/3 `HttpResponse.MaterializeBodyStreamAsync()`
+  reads it into the frame buffer.
+
+### Fixed
+- **Static files over HTTP/2 and HTTP/3** — the HTTP/2 and HTTP/3 send paths frame the body from a
+  byte array and previously ignored `BodyStream`, so a stream-backed response (e.g. a static file)
+  was sent with correct headers but an empty body. Both paths now materialize `BodyStream` before
+  framing.
+
+### Removed
+- **Static files — startup pre-compression and in-memory cache** — runtime gzip compression of
+  uncompressed files at startup is removed; ship pre-built `.br` / `.gz` sidecars (or use the response
+  compression middleware for dynamic responses) instead.
+
+### Security
+- **Static files — path-traversal hardening** — request paths are percent-decoded and rejected if any
+  segment is `..`, with a canonical-path check ensuring the resolved file stays under the configured root.
+
 ## [2.1.3] - 2026-06-19
 
 ### Fixed

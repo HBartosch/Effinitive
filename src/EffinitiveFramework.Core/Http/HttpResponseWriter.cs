@@ -24,12 +24,15 @@ public static class HttpResponseWriter
         [200] = "HTTP/1.1 200 OK\r\n"u8.ToArray(),
         [201] = "HTTP/1.1 201 Created\r\n"u8.ToArray(),
         [204] = "HTTP/1.1 204 No Content\r\n"u8.ToArray(),
+        [206] = "HTTP/1.1 206 Partial Content\r\n"u8.ToArray(),
+        [304] = "HTTP/1.1 304 Not Modified\r\n"u8.ToArray(),
         [400] = "HTTP/1.1 400 Bad Request\r\n"u8.ToArray(),
         [401] = "HTTP/1.1 401 Unauthorized\r\n"u8.ToArray(),
         [403] = "HTTP/1.1 403 Forbidden\r\n"u8.ToArray(),
         [404] = "HTTP/1.1 404 Not Found\r\n"u8.ToArray(),
         [405] = "HTTP/1.1 405 Method Not Allowed\r\n"u8.ToArray(),
         [414] = "HTTP/1.1 414 URI Too Long\r\n"u8.ToArray(),
+        [416] = "HTTP/1.1 416 Range Not Satisfiable\r\n"u8.ToArray(),
         [431] = "HTTP/1.1 431 Request Header Fields Too Large\r\n"u8.ToArray(),
         [500] = "HTTP/1.1 500 Internal Server Error\r\n"u8.ToArray(),
         [501] = "HTTP/1.1 501 Not Implemented\r\n"u8.ToArray(),
@@ -37,13 +40,6 @@ public static class HttpResponseWriter
         [505] = "HTTP/1.1 505 HTTP Version Not Supported\r\n"u8.ToArray(),
     };
 
-    // Tunable for A/B benchmarking of the 200 text/plain keep-alive fast path.
-    private const bool EnableHeaderBlockSpecialization = false;
-
-    // Hot-path specialized header blocks for 200 text/plain keep-alive
-    private static readonly byte[] HotPathPrefix = "HTTP/1.1 200 OK\r\nDate: "u8.ToArray();
-    private static readonly byte[] HotPathMiddle = "\r\nServer: effinitive\r\nContent-Type: text/plain\r\nContent-Length: "u8.ToArray();
-    private static readonly byte[] HotPathSuffix = "\r\nConnection: keep-alive\r\n\r\n"u8.ToArray();
     private static readonly byte[] DateHeaderPrefix = "Date: "u8.ToArray();
     private static readonly byte[] ServerHeaderPrefix = "Server: "u8.ToArray();
     private static readonly byte[] ContentTypeHeaderPrefix = "Content-Type: "u8.ToArray();
@@ -81,29 +77,6 @@ public static class HttpResponseWriter
         CancellationToken cancellationToken = default,
         bool flush = true)
     {
-        // HOT-PATH: 200 OK text/plain keep-alive with no non-standard headers.
-        // This bypasses dictionary mutation and header enumeration entirely.
-        if (EnableHeaderBlockSpecialization && TryGetHotPathBodyLength(response, out var bodyLength))
-        {
-            writer.Write(HotPathPrefix);
-            WriteAsciiDateValue(writer, GetCachedDateHeaderValue());
-            writer.Write(HotPathMiddle);
-            WriteAscii(writer, bodyLength.ToString());
-            writer.Write(HotPathSuffix);
-
-            // Write body if present
-            if (response.Body != null && response.Body.Length > 0)
-            {
-                writer.Write(response.Body);
-            }
-
-            if (flush)
-                await writer.FlushAsync(cancellationToken);
-
-            return;
-        }
-
-        // COLD-PATH: Non-standard responses
         var headers = response.HeadersOrNull;
         
         // Write status line (use cached if available)
@@ -276,11 +249,15 @@ public static class HttpResponseWriter
         // Materialize deferred body if needed
         response.MaterializeDeferredBody();
 
-        // Content-Length handling (RFC 9110 §6.3.5: no Content-Length for 204)
-        if (response.StatusCode != 204)
+        // Content-Length handling (RFC 9110 §6.3.5: no Content-Length for 204; §15.4.5: none for 304)
+        if (response.StatusCode != 204 && response.StatusCode != 304)
         {
             string contentLengthValue;
-            if (headers != null && headers.TryGetValue("Content-Length", out var explicitLength) && !string.IsNullOrEmpty(explicitLength))
+            if (response.BodyStream != null)
+            {
+                contentLengthValue = response.BodyStreamLength.ToString();
+            }
+            else if (headers != null && headers.TryGetValue("Content-Length", out var explicitLength) && !string.IsNullOrEmpty(explicitLength))
             {
                 contentLengthValue = explicitLength;
             }
@@ -326,6 +303,16 @@ public static class HttpResponseWriter
         // End headers
         writer.Write(CrLf);
 
+        // Stream-backed body (e.g. a file on disk): copy the known number of bytes
+        // straight from the source stream to the pipe, then dispose it. Never buffers
+        // the whole payload in memory.
+        if (response.BodyStream != null)
+        {
+            await CopyBodyStreamAsync(writer, response.BodyStream, response.BodyStreamLength, cancellationToken);
+            response.BodyStream = null; // consumed and disposed by CopyBodyStreamAsync
+            return;
+        }
+
         // Write body if present
         if (response.Body != null && response.Body.Length > 0)
         {
@@ -334,6 +321,40 @@ public static class HttpResponseWriter
 
         if (flush)
             await writer.FlushAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Copies exactly <paramref name="length"/> bytes from <paramref name="source"/> to the
+    /// PipeWriter, flushing periodically so large files don't accumulate in the pipe, and
+    /// disposes the source stream when done.
+    /// </summary>
+    private static async ValueTask CopyBodyStreamAsync(PipeWriter writer, Stream source, long length, CancellationToken cancellationToken)
+    {
+        const int BufferSize = 81920; // 80 KB — matches Stream.CopyTo default
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
+        {
+            var remaining = length;
+            while (remaining > 0)
+            {
+                var toRead = (int)Math.Min(BufferSize, remaining);
+                var read = await source.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
+                if (read <= 0)
+                    break; // file truncated underneath us; stop rather than send garbage
+
+                writer.Write(buffer.AsSpan(0, read));
+                remaining -= read;
+
+                var result = await writer.FlushAsync(cancellationToken);
+                if (result.IsCanceled || result.IsCompleted)
+                    break;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+            await source.DisposeAsync();
+        }
     }
 
     private static void WriteAscii(PipeWriter writer, string text)
@@ -365,28 +386,6 @@ public static class HttpResponseWriter
         Volatile.Write(ref _cachedDateValue, formatted);
         Volatile.Write(ref _cachedDateSecond, second);
         return formatted;
-    }
-
-    private static bool TryGetHotPathBodyLength(HttpResponse response, out int bodyLength)
-    {
-        bodyLength = response.Body?.Length ?? 0;
-
-        if (response.StatusCode != 200 || !response.KeepAlive || response.IsStreaming)
-            return false;
-
-        if (!response.ContentType.Equals("text/plain", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var headers = response.HeadersOrNull;
-
-        // Allow only Content-Type in custom headers; Date/Server/Content-Length are emitted by the hot path.
-        if (headers == null || headers.Count == 0)
-            return true;
-
-        if (headers.Count == 1 && headers.ContainsKey("Content-Type"))
-            return true;
-
-        return false;
     }
 
     private static bool IsStandardHeader(string name) =>

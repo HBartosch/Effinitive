@@ -330,6 +330,10 @@ public sealed class Http3Connection : IAsyncDisposable
     {
         response.MaterializeDeferredBody();
 
+        // The HTTP/3 framing path delivers the body from a byte[]. A stream-backed body
+        // (e.g. a static file) is read into memory here, bounded by BodyStreamLength.
+        await response.MaterializeBodyStreamAsync(cancellationToken);
+
         var body = response.Body;
         var bodyLength = body?.Length ?? 0;
 

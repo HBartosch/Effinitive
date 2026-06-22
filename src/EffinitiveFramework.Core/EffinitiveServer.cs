@@ -96,9 +96,10 @@ public sealed partial class EffinitiveServer : IDisposable
             _senderPools[i] = new SocketSenderPool(_ioQueues[i]);
         }
 
-        // With 256 h2 connections × 100 streams each = 25 600 concurrent fire-and-forget
-        // tasks, the default injection rate (1 thread per 500 ms) creates visible stalls.
-        // Keep a floor of 256 so the pool doesn't need to ramp at benchmark start.
+        // Under heavy connection fan-out (e.g. hundreds of HTTP/2 connections each multiplexing
+        // ~100 streams = tens of thousands of concurrent fire-and-forget tasks), the default
+        // thread-injection rate (1 thread per 500 ms) causes visible stalls during a load spike.
+        // Set a floor so the pool doesn't have to ramp from cold under sudden load.
         ThreadPool.GetMinThreads(out var minWorkerThreads, out var minIOThreads);
         var optimalThreads = Math.Max(Math.Max(256, Environment.ProcessorCount * 8), minWorkerThreads);
         ThreadPool.SetMinThreads(optimalThreads, Math.Max(optimalThreads, minIOThreads));

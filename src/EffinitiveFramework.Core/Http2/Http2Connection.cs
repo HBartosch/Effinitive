@@ -783,6 +783,10 @@ public class Http2Connection : IAsyncDisposable
     {
         response.MaterializeDeferredBody();
 
+        // The HTTP/2 framing path delivers the body from a byte[]. A stream-backed body
+        // (e.g. a static file) is read into memory here, bounded by BodyStreamLength.
+        await response.MaterializeBodyStreamAsync(cancellationToken);
+
         var headers = Http2ResponseConverter.ConvertToHttp2Headers(response);
         // HpackEncoder is stateless (no dynamic table), so concurrent calls are safe.
         var encodedHeaders = _hpackEncoder.EncodeHeaders(headers);

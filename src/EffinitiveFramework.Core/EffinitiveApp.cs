@@ -152,7 +152,8 @@ public sealed class EffinitiveAppBuilder
 
     /// <summary>
     /// Enable static file serving from the specified root directory.
-    /// Files are pre-loaded into memory at startup for zero per-request I/O.
+    /// Files are streamed from disk per request with ETag/Last-Modified, conditional
+    /// requests, range support, and Accept-Encoding negotiation of pre-compressed sidecars.
     /// </summary>
     public EffinitiveAppBuilder UseStaticFiles(string rootPath, string requestPath = "/static", string? cacheControl = "public, max-age=3600")
     {

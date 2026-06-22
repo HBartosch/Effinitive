@@ -167,7 +167,10 @@ public sealed partial class EffinitiveServer
         if ((!request.Method.Equals(HttpMethods.Get, StringComparison.OrdinalIgnoreCase) && !isHead)
             || response.StatusCode < 200 || response.StatusCode >= 300
             || response.StatusCode == 204
-            || response.IsStreaming)
+            || response.IsStreaming
+            // Stream-backed responses (e.g. static files) carry their own ETag/Last-Modified
+            // computed from the source; don't hash an empty body over the top of it.
+            || response.BodyStream != null)
             return;
 
         // Generate ETag from response body if not already set

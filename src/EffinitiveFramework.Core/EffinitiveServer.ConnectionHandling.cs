@@ -15,6 +15,10 @@ public sealed partial class EffinitiveServer
         var connection = _connectionPool.Get();
         _metrics.IncrementConnections();
 
+        // Held at method scope so the finally can release a stream/file body that is still in
+        // flight if the connection faults mid-response (HTTP/1.1 path).
+        HttpResponse? response = null;
+
         try
         {
             await connection.InitializeAsync(
@@ -81,7 +85,7 @@ public sealed partial class EffinitiveServer
                 // All responses are written without flushing and batched into a single flush at
                 // the end of the loop, collapsing N TCP writes into 1.
                 bool keepAlive = true;
-                var response = new HttpResponse();
+                response = new HttpResponse();
                 while (request != null)
                 {
                     // Attach streaming body reader: chunked bodies get a dechunking stream;
@@ -229,6 +233,15 @@ public sealed partial class EffinitiveServer
         }
         finally
         {
+            // Release a stream/file body still in flight if the connection faulted mid-response
+            // (e.g. the client disconnected during a static-file download). On the normal path the
+            // writer has already disposed and nulled it, so this is a no-op.
+            if (response?.BodyStream != null)
+            {
+                await response.BodyStream.DisposeAsync();
+                response.BodyStream = null;
+            }
+
             // Async dispose to avoid blocking ThreadPool threads while transport tasks complete.
             await connection.DisposeAsync();
             _metrics.DecrementConnections();

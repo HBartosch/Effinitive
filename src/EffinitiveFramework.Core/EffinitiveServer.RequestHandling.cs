@@ -35,19 +35,13 @@ public sealed partial class EffinitiveServer
             return;
         }
 
-        // Static file fast-path: serve cached files before any routing or middleware
-        request.Headers.TryGetValue(HeaderNames.AcceptEncoding, out var acceptEncoding);
+        // Static file fast-path: serve files from disk before any routing or middleware.
+        // The handler streams from the filesystem and applies its own conditional/range
+        // logic, including the HEAD-specific Content-Length (RFC 9110 §9.3.2).
         if (_staticFileHandler != null &&
             request.Method is "GET" or "HEAD" &&
-            _staticFileHandler.TryServe(request.Path.AsSpan(), acceptEncoding, response))
+            _staticFileHandler.TryServe(request, response))
         {
-            if (request.Method == "HEAD")
-            {
-                // RFC 9110 §9.3.2: HEAD response MUST include the same headers as GET,
-                // including Content-Length reflecting the body that would have been sent.
-                response.Headers["Content-Length"] = (response.Body?.Length ?? 0).ToString();
-                response.Body = null;
-            }
             return;
         }
 

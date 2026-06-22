@@ -4,17 +4,20 @@ public static class HeaderNames
 {
     public const string Accept = "Accept";
     public const string AcceptEncoding = "Accept-Encoding";
+    public const string AcceptRanges = "Accept-Ranges";
     public const string Allow = "Allow";
     public const string CacheControl = "Cache-Control";
     public const string Connection = "Connection";
     public const string ContentEncoding = "Content-Encoding";
     public const string ContentLength = "Content-Length";
+    public const string ContentRange = "Content-Range";
     public const string ContentType = "Content-Type";
     public const string ETag = "ETag";
     public const string Expect = "Expect";
     public const string Host = "Host";
     public const string IfModifiedSince = "If-Modified-Since";
     public const string IfNoneMatch = "If-None-Match";
+    public const string IfRange = "If-Range";
     public const string LastModified = "Last-Modified";
     public const string Range = "Range";
     public const string SecWebSocketAccept = "Sec-WebSocket-Accept";
@@ -30,7 +33,22 @@ public static class MediaTypes
     public const string ApplicationJavaScript = "application/javascript";
     public const string ApplicationJson = "application/json";
     public const string ApplicationOctetStream = "application/octet-stream";
+    public const string ApplicationPdf = "application/pdf";
     public const string ApplicationProblemJson = "application/problem+json";
+    public const string ApplicationVndMsFontObject = "application/vnd.ms-fontobject";
+    public const string ApplicationWasm = "application/wasm";
+    public const string ApplicationXml = "application/xml";
+    public const string ApplicationZip = "application/zip";
+    public const string FontOtf = "font/otf";
+    public const string FontTtf = "font/ttf";
+    public const string FontWoff = "font/woff";
+    public const string FontWoff2 = "font/woff2";
+    public const string ImageGif = "image/gif";
+    public const string ImageJpeg = "image/jpeg";
+    public const string ImagePng = "image/png";
+    public const string ImageSvgXml = "image/svg+xml";
+    public const string ImageWebp = "image/webp";
+    public const string ImageXIcon = "image/x-icon";
     public const string TextCss = "text/css";
     public const string TextEventStream = "text/event-stream";
     public const string TextHtml = "text/html";
@@ -62,6 +80,7 @@ public static class HttpMethods
 public static class HeaderValues
 {
     public const string Brotli = "br";
+    public const string Bytes = "bytes";
     public const string Chunked = "chunked";
     public const string Close = "close";
     public const string Gzip = "gzip";

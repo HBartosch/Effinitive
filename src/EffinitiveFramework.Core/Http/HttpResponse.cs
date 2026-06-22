@@ -34,6 +34,20 @@ public sealed class HttpResponse
     public byte[]? Body { get; set; }
 
     /// <summary>
+    /// A stream whose contents form the response body, with a known length.
+    /// Lets the server stream a payload (e.g. a file on disk) to the client without
+    /// buffering the whole thing in memory. Exactly <see cref="BodyStreamLength"/> bytes
+    /// are copied, after which the stream is disposed by the writer.
+    /// When set, this takes precedence over <see cref="Body"/>.
+    /// </summary>
+    public Stream? BodyStream { get; set; }
+
+    /// <summary>
+    /// Number of bytes to send from <see cref="BodyStream"/>. Used as the Content-Length.
+    /// </summary>
+    public long BodyStreamLength { get; set; }
+
+    /// <summary>
     /// Deferred response body object for single-pass serialization + compression.
     /// When set, the body will be serialized lazily — either through a compression
     /// stream (single-pass) or directly to bytes at write time.
@@ -92,6 +106,8 @@ public sealed class HttpResponse
             200 => "OK",
             201 => "Created",
             204 => "No Content",
+            206 => "Partial Content",
+            304 => "Not Modified",
             400 => "Bad Request",
             401 => "Unauthorized",
             403 => "Forbidden",
@@ -99,6 +115,7 @@ public sealed class HttpResponse
             405 => "Method Not Allowed",
             413 => "Payload Too Large",
             414 => "URI Too Long",
+            416 => "Range Not Satisfiable",
             431 => "Request Header Fields Too Large",
             500 => "Internal Server Error",
             501 => "Not Implemented",
@@ -116,12 +133,52 @@ public sealed class HttpResponse
         StatusCode = 200;
         _headers?.Clear();
         Body = null;
+        // Dispose an unconsumed body stream so file handles aren't leaked on error paths.
+        if (BodyStream != null)
+        {
+            BodyStream.Dispose();
+            BodyStream = null;
+        }
+        BodyStreamLength = 0;
         BodyObject = null;
         BodySerializerOptions = null;
         GzipCompressionLevel = null;
         StreamHandler = null;
         KeepAlive = true;
         _contentType = "application/json";
+    }
+
+    /// <summary>
+    /// Reads <see cref="BodyStream"/> fully into <see cref="Body"/> (bounded by
+    /// <see cref="BodyStreamLength"/>) and disposes the stream. Used by transports that frame
+    /// the body from a byte[] (HTTP/2, HTTP/3) rather than streaming it to a PipeWriter.
+    /// No-op when no stream body is set.
+    /// </summary>
+    public async ValueTask MaterializeBodyStreamAsync(CancellationToken cancellationToken = default)
+    {
+        if (BodyStream == null)
+            return;
+
+        var stream = BodyStream;
+        var length = (int)BodyStreamLength;
+        try
+        {
+            var buffer = new byte[length];
+            var total = 0;
+            while (total < length)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(total, length - total), cancellationToken);
+                if (read <= 0) break;
+                total += read;
+            }
+            Body = total == length ? buffer : buffer[..total];
+        }
+        finally
+        {
+            await stream.DisposeAsync();
+            BodyStream = null;
+            BodyStreamLength = 0;
+        }
     }
 
     /// <summary>
