@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-28
+
+### Added
+- **Response caching** — new `UseResponseCaching()` middleware serves repeat `GET`/`HEAD` requests from a
+  bounded in-process store, skipping endpoint execution, DI scope creation, and JSON serialization. It is
+  opt-in per endpoint via the new `[ResponseCache]` attribute (`Duration`, `Location`, `NoStore`,
+  `VaryByHeader`, `VaryByQueryKeys`), so adding the middleware to an existing app changes nothing until
+  endpoints opt in. See [docs/ResponseCaching.md](docs/ResponseCaching.md).
+- **Client and proxy cache headers** — cached endpoints emit `Cache-Control` (`public`/`private, max-age`,
+  or `no-store`), `Vary` for the declared headers, and `Age` on a hit. An endpoint that sets its own
+  `Cache-Control` always wins over the attribute.
+- **Cache invalidation** — entries expire on their duration, and a successful `POST`/`PUT`/`PATCH`/`DELETE`
+  to a path evicts every cached representation of it (RFC 9111 §4.4). Invalidation is O(1) via a per-path
+  generation counter folded into the cache key, with no path→keys index to maintain.
+- **Conditional requests on cache hits** — cached entries carry a strong `ETag`, so `If-None-Match` is
+  answered with `304 Not Modified` by the middleware itself. This also gives HTTP/2 and HTTP/3
+  revalidation, which the HTTP/1.1-only `ApplyConditionalHeaders` path did not cover.
+- **`HttpResponse.AppendVary(string)`** — adds a field to `Vary` without dropping names already there.
+
+### Changed
+- **Response compression appends to `Vary` instead of overwriting it** — `ResponseCompressionMiddleware`
+  previously assigned `Vary: Accept-Encoding`, discarding any `Vary` an inner concern had set. It now
+  appends, so a cached endpoint varying by e.g. `Accept-Language` keeps its field and shared caches can
+  no longer serve the wrong representation.
+
+### Security
+- Requests carrying an `Authorization` header bypass the shared response cache entirely by default —
+  neither served from it nor stored in it — so an endpoint that is both `[Authorize]` and cached cannot
+  hand one user's response to the next caller. Opt in explicitly with
+  `[ResponseCache(AllowAuthenticated = true)]` when the response is identical for every caller.
+
 ## [2.2.0] - 2026-06-19
 
 ### Changed

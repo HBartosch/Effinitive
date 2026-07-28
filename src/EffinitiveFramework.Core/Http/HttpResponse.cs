@@ -182,6 +182,37 @@ public sealed class HttpResponse
     }
 
     /// <summary>
+    /// Adds a field name to the <c>Vary</c> header, preserving names already present.
+    /// Several concerns select the representation independently — compression varies by
+    /// <c>Accept-Encoding</c> while a cached endpoint may vary by <c>Accept-Language</c> — and a plain
+    /// assignment from whichever runs last would silently drop the others, letting a shared cache serve
+    /// the wrong representation.
+    /// </summary>
+    public void AppendVary(string headerName)
+    {
+        if (string.IsNullOrEmpty(headerName))
+            return;
+
+        if (!Headers.TryGetValue("Vary", out var existing) || string.IsNullOrEmpty(existing))
+        {
+            Headers["Vary"] = headerName;
+            return;
+        }
+
+        // "Vary: *" already means "varies by everything" — narrowing it would be wrong.
+        if (existing.AsSpan().Trim().SequenceEqual("*"))
+            return;
+
+        foreach (var field in existing.Split(','))
+        {
+            if (field.AsSpan().Trim().Equals(headerName.AsSpan(), StringComparison.OrdinalIgnoreCase))
+                return;
+        }
+
+        Headers["Vary"] = string.Concat(existing, ", ", headerName);
+    }
+
+    /// <summary>
     /// Materialize BodyObject into Body if deferred serialization is pending.
     /// Called by response writers and after middleware processing.
     /// </summary>

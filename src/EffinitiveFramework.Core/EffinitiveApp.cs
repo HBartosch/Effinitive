@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using EffinitiveFramework.Core.Caching;
 using EffinitiveFramework.Core.Configuration;
 using EffinitiveFramework.Core.DependencyInjection;
 using EffinitiveFramework.Core.Middleware;
@@ -20,6 +21,11 @@ public sealed class EffinitiveAppBuilder
     private readonly List<Action<MiddlewarePipeline>> _middlewareConfigurators = new();
     private Assembly? _endpointsAssembly;
     private StaticFileHandler? _staticFileHandler;
+
+    // Registration order of the compression and caching middleware, used to warn about the one
+    // ordering that silently misbehaves (see Build()). -1 means "not registered".
+    private int _compressionOrder = -1;
+    private int _cachingOrder = -1;
 
     /// <summary>
     /// Configure services for dependency injection
@@ -56,8 +62,31 @@ public sealed class EffinitiveAppBuilder
         System.IO.Compression.CompressionLevel compressionLevel = System.IO.Compression.CompressionLevel.Fastest,
         int minimumSize = 1024)
     {
-        _middlewareConfigurators.Add(pipeline => 
+        _compressionOrder = _middlewareConfigurators.Count;
+        _middlewareConfigurators.Add(pipeline =>
             pipeline.Use(new ResponseCompressionMiddleware(compressionLevel, minimumSize)));
+        return this;
+    }
+
+    /// <summary>
+    /// Enable response caching. Repeat GET/HEAD requests to endpoints marked with
+    /// <see cref="ResponseCacheAttribute"/> are served from an in-process store without running the
+    /// endpoint, and the matching <c>Cache-Control</c> / <c>Vary</c> / <c>Age</c> headers are emitted
+    /// for client and proxy caches.
+    /// <para>
+    /// Caching is opt-in: endpoints without the attribute are unaffected. Call this <i>after</i>
+    /// <see cref="UseResponseCompression"/> so compression stays outermost and cache hits are still
+    /// compressed.
+    /// </para>
+    /// </summary>
+    public EffinitiveAppBuilder UseResponseCaching(Action<ResponseCacheOptions>? configure = null)
+    {
+        var options = new ResponseCacheOptions();
+        configure?.Invoke(options);
+
+        _cachingOrder = _middlewareConfigurators.Count;
+        _middlewareConfigurators.Add(pipeline =>
+            pipeline.Use(new ResponseCacheMiddleware(options)));
         return this;
     }
 
@@ -214,6 +243,15 @@ public sealed class EffinitiveAppBuilder
         // Build service provider
         var serviceProvider = _services.BuildServiceProvider();
         
+        // The pipeline runs first-registered outermost. Caching must sit inside compression so that a
+        // cache hit still returns through the compression middleware — the other way round, hits
+        // short-circuit past it and go out uncompressed.
+        if (_cachingOrder >= 0 && _compressionOrder >= 0 && _cachingOrder < _compressionOrder)
+        {
+            Console.WriteLine(
+                "⚠️  UseResponseCaching() was registered before UseResponseCompression() — cache hits will be served uncompressed. Swap the calls.");
+        }
+
         // Create middleware pipeline only when middleware is configured.
         MiddlewarePipeline? middlewarePipeline = null;
         if (_middlewareConfigurators.Count > 0)

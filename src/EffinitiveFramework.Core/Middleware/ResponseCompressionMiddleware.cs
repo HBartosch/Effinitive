@@ -58,7 +58,9 @@ public class ResponseCompressionMiddleware : IMiddleware
         // serialize + compress in one pooled pipeline (like Kestrel).
         response.GzipCompressionLevel = _compressionLevel;
         response.Headers[HeaderNames.ContentEncoding] = HeaderValues.Gzip;
-        response.Headers[HeaderNames.Vary] = HeaderNames.AcceptEncoding;
+        // Append rather than assign: an inner concern (e.g. a cached endpoint varying by
+        // Accept-Language) may already have registered its own Vary fields.
+        response.AppendVary(HeaderNames.AcceptEncoding);
         return response;
     }
 
