@@ -203,9 +203,16 @@ public sealed class HttpResponse
         if (existing.AsSpan().Trim().SequenceEqual("*"))
             return;
 
-        foreach (var field in existing.Split(','))
+        // Scan the comma-separated list with spans rather than Split(','), which would allocate a
+        // string[] plus a string per field on a path that usually finds a duplicate and returns.
+        var remaining = existing.AsSpan();
+        while (!remaining.IsEmpty)
         {
-            if (field.AsSpan().Trim().Equals(headerName.AsSpan(), StringComparison.OrdinalIgnoreCase))
+            var comma = remaining.IndexOf(',');
+            var field = (comma >= 0 ? remaining[..comma] : remaining).Trim();
+            remaining = comma >= 0 ? remaining[(comma + 1)..] : ReadOnlySpan<char>.Empty;
+
+            if (field.Equals(headerName.AsSpan(), StringComparison.OrdinalIgnoreCase))
                 return;
         }
 
