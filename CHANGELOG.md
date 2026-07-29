@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-06-22
+
+### Fixed
+- **HTTP/2 outbound flow control** — the response send path now honors the peer's stream- and
+  connection-level send windows (RFC 7540 §6.9) instead of chunking the entire body into the write
+  queue at once. Under high connection counts this previously let large responses (e.g. static files)
+  pile unbounded buffers into the writer channel, exhausting `ArrayPool` and collapsing the connection
+  (`static-h2` @ 1024 conns went to 0 RPS with multi-GiB memory). DATA frames now park on
+  `WINDOW_UPDATE` when the window is exhausted, so in-flight memory is bounded by the advertised window.
+- **HTTP/2 send-window initialization** — the connection-level send window now starts at the RFC
+  default of 65535 (was incorrectly 1 MiB), and the client's `SETTINGS_INITIAL_WINDOW_SIZE` (which
+  governs the server's per-stream send window) is tracked separately from the server's own advertised
+  setting. Mid-connection changes apply the §6.9.2 delta to existing streams.
+
+### Changed
+- `Http2Stream` send window is now lock-guarded with async acquire/release/abort, replacing the
+  previous non-synchronized `+=` that was mutated by the frame-reader thread.
+
 ## [2.2.0] - 2026-06-19
 
 ### Changed

@@ -34,17 +34,26 @@ public class Http2Connection : IAsyncDisposable
 
     // Connection flow control synchronization
     private readonly object _windowLock = new();
-    
+    // Woken when the client grants more connection-level send window via WINDOW_UPDATE.
+    private TaskCompletionSource<bool>? _connectionWindowWaiter;
+
     // Connection settings
     private uint _headerTableSize = Http2Constants.DefaultHeaderTableSize;
     private uint _enablePush = Http2Constants.DefaultEnablePush;
     private uint _maxConcurrentStreams = Http2Constants.DefaultMaxConcurrentStreams;
+    // The server's own advertised SETTINGS_INITIAL_WINDOW_SIZE (governs inbound/receive flow).
     private uint _initialWindowSize = Http2Constants.DefaultInitialWindowSize;
     private uint _maxFrameSize = Http2Constants.DefaultMaxFrameSize;
     private uint _maxHeaderListSize = Http2Constants.DefaultMaxHeaderListSize;
-    
-    // Connection flow control
-    private int _connectionWindowSize = (int)Http2Constants.DefaultInitialWindowSize;
+
+    // The client's advertised SETTINGS_INITIAL_WINDOW_SIZE: the initial *send* window for
+    // each stream the server responds on. RFC 7540 §6.5.2 default is 65535 until the client
+    // says otherwise. Distinct from _initialWindowSize, which is the server's own setting.
+    private int _clientInitialWindowSize = 65535;
+
+    // Connection-level *send* flow-control window (server -> client). RFC 7540 §6.9.2: starts
+    // at 65535 and only grows via WINDOW_UPDATE on stream 0; NOT affected by SETTINGS.
+    private int _connectionWindowSize = 65535;
     
     // Set when client sends GOAWAY: refuse new streams.
     private bool _receivedGoAway;
@@ -204,7 +213,7 @@ public class Http2Connection : IAsyncDisposable
         await SendPushPromiseAsync(associatedStreamId, promisedStreamId, requestHeaders, cancellationToken);
         
         // Create the pushed stream
-        var pushedStream = new Http2Stream(promisedStreamId, (int)_initialWindowSize);
+        var pushedStream = new Http2Stream(promisedStreamId, _clientInitialWindowSize);
         _pushedStreams.TryAdd(promisedStreamId, pushedStream);
         
         // Send HEADERS frame on the promised stream with response headers
@@ -474,7 +483,19 @@ public class Http2Connection : IAsyncDisposable
                         await SendGoAwayAsync(Http2Constants.ErrorFlowControlError, cancellationToken);
                         return;
                     }
-                    _initialWindowSize = value;
+                    // This is the client's initial *send* window for the server's streams.
+                    // RFC 7540 §6.9.2: a change retroactively adjusts the window of all
+                    // existing streams by the delta.
+                    var newInitial = (int)value;
+                    var delta = newInitial - _clientInitialWindowSize;
+                    _clientInitialWindowSize = newInitial;
+                    if (delta != 0)
+                    {
+                        foreach (var s in _streams.Values)
+                            s.UpdateWindowSize(delta);
+                        foreach (var s in _pushedStreams.Values)
+                            s.UpdateWindowSize(delta);
+                    }
                     break;
                 case Http2Constants.SettingsMaxFrameSize:
                     // RFC 7540: MUST be between 2^14 (16384) and 2^24-1 (16777215)
@@ -530,7 +551,7 @@ public class Http2Connection : IAsyncDisposable
         }
         
         // Get or create stream
-        var stream = _streams.GetOrAdd(streamId, id => new Http2Stream(id, (int)_initialWindowSize));
+        var stream = _streams.GetOrAdd(streamId, id => new Http2Stream(id, _clientInitialWindowSize));
         
         if (stream.State == Http2StreamState.Idle)
         {
@@ -746,7 +767,7 @@ public class Http2Connection : IAsyncDisposable
             }
             
             // Send response
-            await SendResponseAsync(stream.StreamId, response, cancellationToken);
+            await SendResponseAsync(stream, response, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -779,8 +800,74 @@ public class Http2Connection : IAsyncDisposable
         }
     }
     
-    private async Task SendResponseAsync(int streamId, HttpResponse response, CancellationToken cancellationToken)
+    /// <summary>
+    /// Reserve up to <paramref name="desired"/> bytes of connection-level send window,
+    /// awaiting a WINDOW_UPDATE on stream 0 when the window is exhausted. Returns the bytes
+    /// reserved (always &gt;= 1 on success).
+    /// </summary>
+    private async Task<int> AcquireConnectionWindowAsync(int desired, CancellationToken cancellationToken)
     {
+        while (true)
+        {
+            TaskCompletionSource<bool> waiter;
+            lock (_windowLock)
+            {
+                if (_connectionWindowSize > 0)
+                {
+                    int grant = Math.Min(desired, _connectionWindowSize);
+                    _connectionWindowSize -= grant;
+                    return grant;
+                }
+                waiter = _connectionWindowWaiter ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            await waiter.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    private bool TryReserveConnectionWindow(int n)
+    {
+        lock (_windowLock)
+        {
+            if (_connectionWindowSize < n)
+                return false;
+            _connectionWindowSize -= n;
+            return true;
+        }
+    }
+
+    private void ReleaseConnectionWindow(int amount)
+    {
+        if (amount <= 0) return;
+        lock (_windowLock)
+        {
+            _connectionWindowSize += amount;
+            if (_connectionWindowSize > 0)
+            {
+                var w = _connectionWindowWaiter;
+                _connectionWindowWaiter = null;
+                w?.TrySetResult(true);
+            }
+        }
+    }
+
+    /// <summary>Atomically reserve <paramref name="n"/> bytes from both stream and connection
+    /// windows, or nothing if either is short. Used by the single-frame fast path.</summary>
+    private bool TryReserveBothWindows(Http2Stream stream, int n)
+    {
+        if (!stream.TryReserveWindow(n))
+            return false;
+        if (!TryReserveConnectionWindow(n))
+        {
+            stream.ReleaseWindow(n);
+            return false;
+        }
+        return true;
+    }
+
+    private async Task SendResponseAsync(Http2Stream stream, HttpResponse response, CancellationToken cancellationToken)
+    {
+        var streamId = stream.StreamId;
+
         response.MaterializeDeferredBody();
 
         // The HTTP/2 framing path delivers the body from a byte[]. A stream-backed body
@@ -813,9 +900,12 @@ public class Http2Connection : IAsyncDisposable
             var bodyLen = response.Body.Length;
             var maxData = (int)_maxFrameSize;
 
-            if (bodyLen <= maxData)
+            // Fast path: a single-frame body whose full size is *immediately* available in
+            // both the stream and connection send windows. Emit HEADERS + DATA + END_STREAM
+            // as one contiguous buffer (single queued write), preserving the hot-path latency
+            // for small responses while still honoring flow control.
+            if (bodyLen <= maxData && TryReserveBothWindows(stream, bodyLen))
             {
-                // Small body: combine HEADERS + DATA into one contiguous buffer (single write).
                 var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
                 var totalLen = headersFrameLen + Http2Constants.FrameHeaderLength + bodyLen;
                 var combined = ArrayPool<byte>.Shared.Rent(totalLen);
@@ -842,8 +932,11 @@ public class Http2Connection : IAsyncDisposable
             }
             else
             {
-                // Large body: send HEADERS then DATA split into max-frame-size chunks.
-                // RFC 7540 §4.2: endpoints MUST NOT send frames larger than SETTINGS_MAX_FRAME_SIZE.
+                // General path: send HEADERS first (HEADERS frames are exempt from flow
+                // control), then DATA split into chunks bounded by BOTH max-frame-size
+                // (RFC 7540 §4.2) and the stream + connection send windows (RFC 7540 §6.9).
+                // Each chunk waits for window when the peer hasn't granted enough, which is
+                // what bounds in-flight memory instead of queueing the whole body at once.
                 var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
                 var hdrBuf = ArrayPool<byte>.Shared.Rent(headersFrameLen);
                 new Http2Frame
@@ -859,20 +952,28 @@ public class Http2Connection : IAsyncDisposable
                 int offset = 0;
                 while (offset < bodyLen)
                 {
-                    int chunkSize = Math.Min(maxData, bodyLen - offset);
-                    bool isLast = offset + chunkSize >= bodyLen;
-                    var dataFrameLen = Http2Constants.FrameHeaderLength + chunkSize;
+                    int want = Math.Min(maxData, bodyLen - offset);
+
+                    // Reserve from the stream window first, then the connection window. If the
+                    // connection grants less, hand the surplus stream window back so it isn't lost.
+                    int streamGrant = await stream.AcquireWindowAsync(want, cancellationToken);
+                    int grant = await AcquireConnectionWindowAsync(streamGrant, cancellationToken);
+                    if (grant < streamGrant)
+                        stream.ReleaseWindow(streamGrant - grant);
+
+                    bool isLast = offset + grant >= bodyLen;
+                    var dataFrameLen = Http2Constants.FrameHeaderLength + grant;
                     var dataBuf = ArrayPool<byte>.Shared.Rent(dataFrameLen);
                     new Http2Frame
                     {
-                        Length = chunkSize,
+                        Length = grant,
                         Type = Http2Constants.FrameTypeData,
                         Flags = isLast ? Http2Constants.FlagEndStream : (byte)0,
                         StreamId = streamId
                     }.WriteHeader(dataBuf);
-                    response.Body.AsSpan(offset, chunkSize).CopyTo(dataBuf.AsSpan(Http2Constants.FrameHeaderLength));
+                    response.Body.AsSpan(offset, grant).CopyTo(dataBuf.AsSpan(Http2Constants.FrameHeaderLength));
                     await _writeChannel.Writer.WriteAsync(new PooledBuffer(dataBuf, dataFrameLen, IsPooled: true), cancellationToken);
-                    offset += chunkSize;
+                    offset += grant;
                 }
             }
         }
@@ -886,10 +987,16 @@ public class Http2Connection : IAsyncDisposable
         
         if (frame.StreamId == 0)
         {
-            // Connection-level window update
+            // Connection-level window update: grant more send quota and wake any waiter.
             lock (_windowLock)
             {
                 _connectionWindowSize += increment;
+                if (_connectionWindowSize > 0)
+                {
+                    var w = _connectionWindowWaiter;
+                    _connectionWindowWaiter = null;
+                    w?.TrySetResult(true);
+                }
             }
         }
         else if (_streams.TryGetValue(frame.StreamId, out var stream))
@@ -925,6 +1032,8 @@ public class Http2Connection : IAsyncDisposable
         if (_streams.TryRemove(streamId, out var stream))
         {
             stream.UpdateState(Http2StreamState.Closed);
+            // Unblock a response task parked on this stream's send window.
+            stream.Abort();
         }
         
         return Task.CompletedTask;
