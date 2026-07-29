@@ -36,6 +36,7 @@ A high-performance C# web framework designed to outperform FastEndpoints and com
 - **Static file serving** - Zero per-request I/O via in-memory `FrozenDictionary` cache, 25+ MIME types
 - **Response compression** - Gzip middleware with single-pass serialize+compress pipeline
 - **Response caching** - Opt-in `[ResponseCache]` middleware serving repeat GETs from memory, with `Cache-Control`/`Vary`/`Age` headers, ETag revalidation, and write-through invalidation ([docs](docs/ResponseCaching.md))
+- **OpenAPI / Swagger** - `UseOpenApi()` serves an OpenAPI 3.0.3 document and Swagger UI, generated once at startup from the route table with zero per-request cost ([docs](docs/OpenApi.md))
 - **Custom HTTP server** with direct socket handling for maximum performance
 - **High-performance transport layer** - `IOQueue`/`SocketSenderPool` architecture mirroring Kestrel's design
 - **HTTP/2 support** via ALPN negotiation with binary framing and HPACK compression
@@ -438,6 +439,18 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - **Struct Types** - Value types for small, frequently-used data
 - **Unsafe Code** - Low-level optimizations where beneficial
 
+## 🆕 What's New in v2.4.0
+
+| Feature | Details |
+|---|---|
+| OpenAPI document | `UseOpenApi()` serves an OpenAPI 3.0.3 spec at `/openapi/v1.json`, generated once at startup from the route table. |
+| Swagger UI | Rendered at `/swagger`, with a configurable asset base URL for self-hosted or air-gapped use. |
+| Zero-config description | Routes, path parameter types, request bodies, response schemas, and content types are all inferred from metadata the builder already resolved. |
+| Documentation attributes | `[OpenApiOperation]`, `[OpenApiResponse]`, `[OpenApiParameter]`, and `[OpenApiIgnore]` for what can't be inferred. |
+| Schemas from your types | Naming follows the server's `JsonSerializerOptions`; DataAnnotations become schema constraints; `$ref` components with cycle safety. |
+
+See [docs/OpenApi.md](docs/OpenApi.md).
+
 ## 🆕 What's New in v2.3.0
 
 | Feature | Details |
@@ -486,7 +499,7 @@ See [RELEASE_NOTES_v2.0.0.md](RELEASE_NOTES_v2.0.0.md) for the full release note
 - [x] ~~Static file serving~~ ✅ **IMPLEMENTED v2.0.0** (Zero per-request I/O)
 - [x] ~~HTTP/3 / QUIC protocol~~ ✅ **IMPLEMENTED v2.0.0** (Experimental, .NET 10+)
 - [x] ~~Response caching~~ ✅ **IMPLEMENTED v2.3.0** (Opt-in in-memory store + client cache headers)
-- [ ] OpenAPI/Swagger integration
+- [x] ~~OpenAPI/Swagger integration~~ ✅ **IMPLEMENTED v2.4.0** (OpenAPI 3.0.3 document + Swagger UI, generated at startup)
 - [ ] Rate limiting
 
 ## 🤝 Contributing

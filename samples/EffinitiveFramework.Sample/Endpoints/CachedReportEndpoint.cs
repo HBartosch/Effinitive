@@ -1,5 +1,6 @@
 using EffinitiveFramework.Core;
 using EffinitiveFramework.Core.Caching;
+using EffinitiveFramework.Core.OpenApi;
 
 namespace EffinitiveFramework.Sample.Endpoints;
 
@@ -13,6 +14,10 @@ namespace EffinitiveFramework.Sample.Endpoints;
 /// </para>
 /// </summary>
 [ResponseCache(Duration = 30)]
+[OpenApiOperation(
+    Summary = "Sales report",
+    Description = "Expensive to compute, so the response is cached for 30 seconds. A POST to the same path invalidates it.",
+    Tags = "Reports")]
 public class CachedReportEndpoint : NoRequestAsyncEndpointBase<CachedReportResponse>
 {
     protected override string Method => "GET";
@@ -36,6 +41,10 @@ public class CachedReportEndpoint : NoRequestAsyncEndpointBase<CachedReportRespo
 /// POST /api/report - any successful write to this path evicts every cached representation of it,
 /// so the next GET recomputes (RFC 9111 §4.4).
 /// </summary>
+[OpenApiOperation(
+    Summary = "Invalidate the sales report",
+    Description = "Evicts every cached representation of /api/report so the next GET recomputes.",
+    Tags = "Reports")]
 public class RefreshReportEndpoint : NoRequestAsyncEndpointBase<RefreshReportResponse>
 {
     protected override string Method => "POST";

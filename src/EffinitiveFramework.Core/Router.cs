@@ -21,6 +21,7 @@ public sealed class Router
     private FrozenDictionary<string, RouteNode>? _frozenRoutes;
     private FrozenDictionary<string, ParametricRoute[]>? _paramRoutes;
     private FrozenDictionary<string, Func<WebSocketConnection, CancellationToken, Task>>? _frozenWsRoutes;
+    private RouteDescriptor[]? _descriptors;
     private bool _frozen;
 
     /// <summary>
@@ -87,14 +88,19 @@ public sealed class Router
         // Build immutable exact-match dictionary
         _frozenRoutes = _mutableRoutes.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
-        // Build per-method parameterised route lists with pre-split segments
+        // Build per-method parameterised route lists with pre-split segments, and — in the same
+        // pass — the descriptor list that tooling (OpenAPI generation) enumerates.
         var byMethod = new Dictionary<string, List<ParametricRoute>>(StringComparer.OrdinalIgnoreCase);
+        var descriptors = new List<RouteDescriptor>(_mutableRoutes.Count);
         foreach (var kvp in _mutableRoutes)
         {
             var colonIdx = kvp.Key.IndexOf(':');
             if (colonIdx < 0) continue;
             var method  = kvp.Key[..colonIdx];
             var pattern = kvp.Key[(colonIdx + 1)..];
+
+            descriptors.Add(new RouteDescriptor(method, pattern, kvp.Value.EndpointType, kvp.Value.Invoker));
+
             if (!pattern.Contains('{')) continue;
 
             // Pre-split once at startup — never again at request time
@@ -114,6 +120,21 @@ public sealed class Router
 
         // Freeze WebSocket routes
         _frozenWsRoutes = _wsRoutes.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+        _descriptors = [.. descriptors];
+    }
+
+    /// <summary>
+    /// Every registered HTTP route, for tooling that needs to enumerate the API surface — OpenAPI
+    /// document generation in particular. WebSocket routes are deliberately excluded: they are
+    /// registered separately and OpenAPI 3.0 cannot describe them.
+    /// <para>Call after <see cref="Freeze"/>; the list is built once and never changes.</para>
+    /// </summary>
+    public IReadOnlyList<RouteDescriptor> GetRegisteredRoutes()
+    {
+        if (_descriptors == null)
+            ThrowNotFrozen();
+        return _descriptors!;
     }
 
     /// <summary>
@@ -312,6 +333,37 @@ public sealed class Router
             Segments = segments;
             Node = node;
         }
+    }
+}
+
+/// <summary>
+/// A route as it was registered — the raw pattern rather than a match against a specific request.
+/// Returned by <see cref="Router.GetRegisteredRoutes"/> so tooling can describe the API without
+/// re-deriving what the builder already resolved at startup.
+/// </summary>
+public sealed class RouteDescriptor
+{
+    /// <summary>HTTP method the route was registered under (uppercase, e.g. "GET").</summary>
+    public string Method { get; }
+
+    /// <summary>Route pattern including any <c>{param}</c> placeholders, e.g. "/api/users/{id}".</summary>
+    public string Pattern { get; }
+
+    /// <summary>Endpoint type backing the route. Null for delegate-registered routes.</summary>
+    public Type? EndpointType { get; }
+
+    /// <summary>
+    /// Compiled invoker, carrying the request/response types and route-parameter setters.
+    /// Null for delegate routes and for endpoints without a compiled invoker (e.g. SSE).
+    /// </summary>
+    public EndpointInvoker? Invoker { get; }
+
+    public RouteDescriptor(string method, string pattern, Type? endpointType, EndpointInvoker? invoker)
+    {
+        Method = method;
+        Pattern = pattern;
+        EndpointType = endpointType;
+        Invoker = invoker;
     }
 }
 

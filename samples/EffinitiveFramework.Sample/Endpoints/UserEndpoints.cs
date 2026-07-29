@@ -1,10 +1,12 @@
 using EffinitiveFramework.Core;
+using EffinitiveFramework.Core.OpenApi;
 
 namespace EffinitiveFramework.Sample.Endpoints;
 
 /// <summary>
 /// Example of ValueTask-based endpoint for in-memory/cached operations
 /// </summary>
+[OpenApiOperation(Summary = "List all users", Tags = "Users")]
 public class GetUsersEndpoint : EndpointBase<EmptyRequest, UsersResponse>
 {
     protected override string Method => "GET";
@@ -27,6 +29,8 @@ public class GetUsersEndpoint : EndpointBase<EmptyRequest, UsersResponse>
 /// <summary>
 /// Example of Task-based endpoint for I/O operations (database, external APIs, etc.)
 /// </summary>
+[OpenApiOperation(Summary = "Create a user", Tags = "Users")]
+[OpenApiResponse(201, typeof(UserResponse), Description = "User created")]
 public class CreateUserEndpoint : AsyncEndpointBase<CreateUserRequest, UserResponse>
 {
     protected override string Method => "POST";

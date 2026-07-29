@@ -5,6 +5,7 @@ using EffinitiveFramework.Core.Configuration;
 using EffinitiveFramework.Core.DependencyInjection;
 using EffinitiveFramework.Core.Middleware;
 using EffinitiveFramework.Core.Http;
+using EffinitiveFramework.Core.OpenApi;
 using EffinitiveFramework.Core.StaticFiles;
 using EffinitiveFramework.Core.WebSocket;
 
@@ -21,6 +22,7 @@ public sealed class EffinitiveAppBuilder
     private readonly List<Action<MiddlewarePipeline>> _middlewareConfigurators = new();
     private Assembly? _endpointsAssembly;
     private StaticFileHandler? _staticFileHandler;
+    private OpenApiOptions? _openApiOptions;
 
     // Registration order of the compression and caching middleware, used to warn about the one
     // ordering that silently misbehaves (see Build()). -1 means "not registered".
@@ -207,6 +209,24 @@ public sealed class EffinitiveAppBuilder
     }
 
     /// <summary>
+    /// Serve an OpenAPI 3.0 document describing the registered endpoints, plus a Swagger UI page.
+    /// <para>
+    /// The document is generated once at <see cref="Build"/> time from the frozen route table, so it
+    /// costs nothing per request. Endpoints are described automatically; use
+    /// <c>[OpenApiOperation]</c>, <c>[OpenApiResponse]</c>, and <c>[OpenApiParameter]</c> to add prose,
+    /// extra status codes, and query/header parameters, and <c>[OpenApiIgnore]</c> to leave an endpoint
+    /// out.
+    /// </para>
+    /// </summary>
+    public EffinitiveAppBuilder UseOpenApi(Action<OpenApiOptions>? configure = null)
+    {
+        var options = new OpenApiOptions();
+        configure?.Invoke(options);
+        _openApiOptions = options;
+        return this;
+    }
+
+    /// <summary>
     /// Map endpoints from specified assembly
     /// </summary>
     public EffinitiveAppBuilder MapEndpoints(Assembly assembly)
@@ -275,7 +295,18 @@ public sealed class EffinitiveAppBuilder
         // Must be called after all AddRoute / AddEndpointType calls.
         _router.Freeze();
 
-        return new EffinitiveApp(_serverOptions, _router, serviceProvider, middlewarePipeline, _staticFileHandler);
+        // Generate the OpenAPI document once, after freezing — it reads the route table the freeze
+        // produces, and the result is a static byte buffer for the lifetime of the app.
+        OpenApiHandler? openApiHandler = null;
+        if (_openApiOptions != null)
+        {
+            openApiHandler = new OpenApiHandler(
+                _openApiOptions,
+                _router.GetRegisteredRoutes(),
+                _serverOptions.JsonOptions);
+        }
+
+        return new EffinitiveApp(_serverOptions, _router, serviceProvider, middlewarePipeline, _staticFileHandler, openApiHandler);
     }
 
     private void RegisterEndpoints(Assembly assembly, IServiceProvider serviceProvider)
@@ -379,12 +410,12 @@ public sealed class EffinitiveApp : IDisposable
     /// </summary>
     public IServiceProvider? Services => _serviceProvider;
 
-    internal EffinitiveApp(ServerOptions options, Router router, IServiceProvider? serviceProvider = null, MiddlewarePipeline? middlewarePipeline = null, StaticFileHandler? staticFileHandler = null)
+    internal EffinitiveApp(ServerOptions options, Router router, IServiceProvider? serviceProvider = null, MiddlewarePipeline? middlewarePipeline = null, StaticFileHandler? staticFileHandler = null, OpenApiHandler? openApiHandler = null)
     {
         _options = options;
         _serviceProvider = serviceProvider;
         _middlewarePipeline = middlewarePipeline;
-        _server = new EffinitiveServer(options, router, serviceProvider, middlewarePipeline, staticFileHandler);
+        _server = new EffinitiveServer(options, router, serviceProvider, middlewarePipeline, staticFileHandler, openApiHandler);
     }
 
     /// <summary>
