@@ -36,6 +36,15 @@ var app = EffinitiveApp
         compressionLevel: CompressionLevel.Fastest,
         minimumSize: 1024)
 
+    // ── v2.3: Response caching ─────────────────────────────────────────────
+    // Opt-in per endpoint via [ResponseCache]. Repeat GET/HEAD requests are served
+    // from memory without running the endpoint; a write to the same path evicts it.
+    // Registered AFTER compression so cache hits still go out compressed.
+    .UseResponseCaching(cache =>
+    {
+        cache.MaxCacheSizeBytes = 32 * 1024 * 1024;
+    })
+
     // ── v2.0: Static files ─────────────────────────────────────────────────
     // Pre-loads all files from ./wwwroot into memory at startup.
     // Served under /static — e.g. /static/index.html, /static/demo.css

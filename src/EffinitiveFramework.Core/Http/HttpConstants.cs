@@ -5,7 +5,9 @@ public static class HeaderNames
     public const string Accept = "Accept";
     public const string AcceptEncoding = "Accept-Encoding";
     public const string AcceptRanges = "Accept-Ranges";
+    public const string Age = "Age";
     public const string Allow = "Allow";
+    public const string Authorization = "Authorization";
     public const string CacheControl = "Cache-Control";
     public const string Connection = "Connection";
     public const string ContentEncoding = "Content-Encoding";
@@ -19,8 +21,10 @@ public static class HeaderNames
     public const string IfNoneMatch = "If-None-Match";
     public const string IfRange = "If-Range";
     public const string LastModified = "Last-Modified";
+    public const string Pragma = "Pragma";
     public const string Range = "Range";
     public const string SecWebSocketAccept = "Sec-WebSocket-Accept";
+    public const string SetCookie = "Set-Cookie";
     public const string SecWebSocketKey = "Sec-WebSocket-Key";
     public const string Server = "Server";
     public const string TransferEncoding = "Transfer-Encoding";
@@ -86,5 +90,6 @@ public static class HeaderValues
     public const string Gzip = "gzip";
     public const string KeepAlive = "keep-alive";
     public const string NoCache = "no-cache";
+    public const string NoStore = "no-store";
     public const string Websocket = "websocket";
 }

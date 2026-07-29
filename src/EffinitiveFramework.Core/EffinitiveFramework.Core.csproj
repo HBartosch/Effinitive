@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>2.2.0</Version>
+    <Version>2.3.0</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,7 +19,7 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v2.1.2: Typed endpoints (EndpointBase&lt;TRequest,TResponse&gt;) now transparently bind chunked and large deferred bodies — the framework drains BodyStream before deserialization so no endpoint boilerplate is needed. string and byte[] request types receive the raw body instead of JSON-deserialized values. Added HttpRequest.ReadBodyAsync() and CountBodyBytesAsync() for endpoints that need manual body access.</PackageReleaseNotes>
+    <PackageReleaseNotes>v2.3.0: Response caching. UseResponseCaching() serves repeat GET/HEAD requests from a bounded in-process store, skipping endpoint execution and JSON serialization, and emits Cache-Control/Vary/Age for client and proxy caches. Opt-in per endpoint via [ResponseCache(Duration, Location, VaryByHeader, VaryByQueryKeys)]. Entries expire on their duration and are evicted when a successful POST/PUT/PATCH/DELETE hits the same path. Cache hits answer If-None-Match with 304 on HTTP/1.1, HTTP/2 and HTTP/3. Requests carrying Authorization bypass the shared cache unless the endpoint opts in.</PackageReleaseNotes>
     <RepositoryType>git</RepositoryType>
     <Copyright>Copyright (c) 2025 Henry Bartosch</Copyright>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>

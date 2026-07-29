@@ -35,6 +35,7 @@ A high-performance C# web framework designed to outperform FastEndpoints and com
 - **WebSocket support** (RFC 6455) - Full bidirectional messaging with `MapWebSocket()` or `WebSocketEndpointBase`
 - **Static file serving** - Zero per-request I/O via in-memory `FrozenDictionary` cache, 25+ MIME types
 - **Response compression** - Gzip middleware with single-pass serialize+compress pipeline
+- **Response caching** - Opt-in `[ResponseCache]` middleware serving repeat GETs from memory, with `Cache-Control`/`Vary`/`Age` headers, ETag revalidation, and write-through invalidation ([docs](docs/ResponseCaching.md))
 - **Custom HTTP server** with direct socket handling for maximum performance
 - **High-performance transport layer** - `IOQueue`/`SocketSenderPool` architecture mirroring Kestrel's design
 - **HTTP/2 support** via ALPN negotiation with binary framing and HPACK compression
@@ -437,6 +438,17 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - **Struct Types** - Value types for small, frequently-used data
 - **Unsafe Code** - Low-level optimizations where beneficial
 
+## 🆕 What's New in v2.3.0
+
+| Feature | Details |
+|---|---|
+| Response caching | `UseResponseCaching()` + `[ResponseCache(Duration = 30)]` — repeat GET/HEAD requests are served from a bounded in-process store without running the endpoint. |
+| Cache headers | `Cache-Control` (`public`/`private, max-age`), `Vary` for declared headers and query keys, and `Age` on a hit. |
+| Invalidation | TTL, plus automatic eviction of a path when a successful POST/PUT/PATCH/DELETE targets it (RFC 9111 §4.4). |
+| Revalidation | Cached entries carry a strong `ETag`, so `If-None-Match` returns `304` — on HTTP/1.1, HTTP/2 and HTTP/3. |
+
+See [docs/ResponseCaching.md](docs/ResponseCaching.md).
+
 ## 🆕 What's New in v2.0.0
 
 | Feature | Details |
@@ -473,7 +485,7 @@ See [RELEASE_NOTES_v2.0.0.md](RELEASE_NOTES_v2.0.0.md) for the full release note
 - [x] ~~WebSocket support~~ ✅ **IMPLEMENTED v2.0.0** (RFC 6455, full framing)
 - [x] ~~Static file serving~~ ✅ **IMPLEMENTED v2.0.0** (Zero per-request I/O)
 - [x] ~~HTTP/3 / QUIC protocol~~ ✅ **IMPLEMENTED v2.0.0** (Experimental, .NET 10+)
-- [ ] Response caching
+- [x] ~~Response caching~~ ✅ **IMPLEMENTED v2.3.0** (Opt-in in-memory store + client cache headers)
 - [ ] OpenAPI/Swagger integration
 - [ ] Rate limiting
 
