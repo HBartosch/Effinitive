@@ -36,6 +36,20 @@ var app = EffinitiveApp
         compressionLevel: CompressionLevel.Fastest,
         minimumSize: 1024)
 
+    // ── v2.5: Rate limiting ────────────────────────────────────────────────
+    // Token bucket per client IP: burst up to 20, refilling over 30 seconds.
+    // Deliberately small so the limit is easy to trip by hand with curl.
+    // /api/health carries [DisableRateLimit]; /api/report has its own tighter
+    // [RateLimit(5 per 60s)] on top of this one.
+    .UseRateLimiting(limits =>
+    {
+        limits.PermitLimit = 20;
+        limits.Window = TimeSpan.FromSeconds(30);
+        // Behind nginx or CloudFlare, uncomment so the real client is used
+        // instead of the proxy's address:
+        // limits.AddTrustedProxy("10.0.0.1");
+    })
+
     // ── v2.4: OpenAPI / Swagger ────────────────────────────────────────────
     // Serves the spec at /openapi/v1.json and Swagger UI at /swagger, generated
     // once at startup from the registered endpoints.

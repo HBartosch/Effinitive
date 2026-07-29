@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.IO.Pipelines;
+using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -37,6 +38,23 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
     public Stream? Stream => _stream;
 
     /// <summary>
+    /// The peer's address, captured once when the connection is initialized.
+    /// <para>
+    /// Read from the socket a single time rather than per request: <see cref="Socket.RemoteEndPoint"/>
+    /// is syscall-backed, and the pipelined path parses several requests out of one socket read.
+    /// </para>
+    /// </summary>
+    public IPAddress? RemoteIpAddress { get; private set; }
+
+    /// <summary>
+    /// The peer address pre-formatted as a string. Cached because rate limiting needs a string
+    /// partition key on every request, and <see cref="IPAddress.ToString"/> allocates a fresh string
+    /// each call — which would put an avoidable allocation on the hot path of a framework that works
+    /// hard to avoid them.
+    /// </summary>
+    internal string? RemoteIpAddressText { get; private set; }
+
+    /// <summary>
     /// Get a Stream for this connection — returns the underlying SslStream/NetworkStream
     /// if available, otherwise wraps the PipeWriter/PipeReader as a Stream for WebSocket use.
     /// </summary>
@@ -72,6 +90,17 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
         _socket = socket;
         _isSecure = isSecure;
         LastActivity = DateTime.UtcNow;
+
+        // Capture once per connection. IPv4-mapped IPv6 addresses (::ffff:203.0.113.7, which is what a
+        // dual-stack listener reports for IPv4 peers) are unmapped so the same client produces the same
+        // rate-limit partition key regardless of how the socket was bound.
+        if (socket.RemoteEndPoint is IPEndPoint remote)
+        {
+            RemoteIpAddress = remote.Address.IsIPv4MappedToIPv6
+                ? remote.Address.MapToIPv4()
+                : remote.Address;
+            RemoteIpAddressText = RemoteIpAddress.ToString();
+        }
 
         if (isSecure && certificate != null)
         {
@@ -197,7 +226,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
 
         try
         {
-            var request = new HttpRequest();
+            var request = new HttpRequest { RemoteIpAddress = RemoteIpAddress, RemoteIpAddressText = RemoteIpAddressText };
 
             while (true)
             {
@@ -404,7 +433,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
             return null;
         }
 
-        var request = new HttpRequest();
+        var request = new HttpRequest { RemoteIpAddress = RemoteIpAddress, RemoteIpAddressText = RemoteIpAddressText };
         if (HttpRequestParser.TryParseRequest(
             ref buffer,
             request,

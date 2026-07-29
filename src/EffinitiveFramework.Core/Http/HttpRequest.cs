@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Net;
 using EffinitiveFramework.Core.Authentication;
 
 namespace EffinitiveFramework.Core.Http;
@@ -80,6 +81,24 @@ public sealed class HttpRequest
     /// Whether this is an HTTPS request
     /// </summary>
     public bool IsHttps { get; set; }
+
+    /// <summary>
+    /// The peer's IP address, as reported by the transport. Null when the connection has no IP endpoint
+    /// (in-memory transports and unit tests).
+    /// <para>
+    /// This is always the address the packets came from, never a value taken from a request header. Code
+    /// that needs the originating client behind a reverse proxy must resolve <c>X-Forwarded-For</c>
+    /// explicitly and against a trusted-proxy list — the header is client-supplied and trivially spoofed.
+    /// </para>
+    /// </summary>
+    public IPAddress? RemoteIpAddress { get; set; }
+
+    /// <summary>
+    /// <see cref="RemoteIpAddress"/> pre-formatted, carried over from the connection so rate limiting
+    /// does not pay an <see cref="IPAddress.ToString"/> allocation per request. Internal because it is
+    /// a cache of the property above, not a second piece of information.
+    /// </summary>
+    internal string? RemoteIpAddressText { get; set; }
 
     /// <summary>
     /// The authenticated user (null if not authenticated)
@@ -218,6 +237,8 @@ public sealed class HttpRequest
         ContentLength = -1;
         KeepAlive = true;
         IsHttps = false;
+        RemoteIpAddress = null;
+        RemoteIpAddressText = null;
         User = null;
         Items?.Clear();
         RouteValues?.Clear();

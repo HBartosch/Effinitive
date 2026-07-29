@@ -43,11 +43,19 @@ public static class Http2RequestConverter
     }
     
     /// <summary>
-    /// Convert HTTP/2 headers to HTTP/1.1 request
+    /// Convert HTTP/2 headers to HTTP/1.1 request.
+    /// <para>
+    /// <paramref name="remoteIpAddress"/> is supplied by the caller because HTTP/2 and HTTP/3 build
+    /// requests here rather than in <c>HttpConnection</c>, and both carry the peer address on the
+    /// connection rather than the stream.
+    /// </para>
     /// </summary>
-    public static HttpRequest ConvertToHttp1Request(List<(string name, string value)> headers, byte[] body)
+    public static HttpRequest ConvertToHttp1Request(
+        List<(string name, string value)> headers,
+        byte[] body,
+        System.Net.IPAddress? remoteIpAddress = null)
     {
-        var request = new HttpRequest();
+        var request = new HttpRequest { RemoteIpAddress = remoteIpAddress };
         
         foreach (var (name, value) in headers)
         {

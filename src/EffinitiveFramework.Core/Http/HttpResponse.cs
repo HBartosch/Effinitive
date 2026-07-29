@@ -116,6 +116,7 @@ public sealed class HttpResponse
             413 => "Payload Too Large",
             414 => "URI Too Long",
             416 => "Range Not Satisfiable",
+            429 => "Too Many Requests",
             431 => "Request Header Fields Too Large",
             500 => "Internal Server Error",
             501 => "Not Implemented",
