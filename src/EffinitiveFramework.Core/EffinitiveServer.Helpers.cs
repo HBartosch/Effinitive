@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using EffinitiveFramework.Core.Http;
 using EffinitiveFramework.Core.Http2;
@@ -85,6 +86,17 @@ public sealed partial class EffinitiveServer
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Strong entity-tag derived from the response body: the first 8 bytes of its SHA-256, hex-encoded
+    /// and quoted. Deterministic, so the same body always yields the same tag whether it was produced
+    /// by an endpoint or replayed from the response cache.
+    /// </summary>
+    internal static string ComputeBodyETag(byte[]? body)
+    {
+        var hash = SHA256.HashData(body ?? Array.Empty<byte>());
+        return $"\"{Convert.ToHexString(hash, 0, 8).ToLowerInvariant()}\"";
     }
 
     private void SerializeResponse(HttpResponse response, object? responseObj, string contentType)

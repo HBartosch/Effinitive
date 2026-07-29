@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using EffinitiveFramework.Core.Http;
 
 namespace EffinitiveFramework.Core;
@@ -173,11 +172,11 @@ public sealed partial class EffinitiveServer
             || response.BodyStream != null)
             return;
 
-        // Generate ETag from response body if not already set
+        // Generate ETag from response body if not already set. Cache hits arrive with the tag already
+        // populated by ResponseCacheMiddleware, so this skips re-hashing an unchanged body.
         if (!response.Headers.ContainsKey(HeaderNames.ETag))
         {
-            var hash = SHA256.HashData(response.Body ?? Array.Empty<byte>());
-            response.Headers[HeaderNames.ETag] = $"\"{Convert.ToHexString(hash, 0, 8).ToLowerInvariant()}\"";
+            response.Headers[HeaderNames.ETag] = ComputeBodyETag(response.Body);
         }
 
         // Set Last-Modified if not already set
