@@ -5,6 +5,7 @@ using EffinitiveFramework.Core.Configuration;
 using EffinitiveFramework.Core.Http;
 using EffinitiveFramework.Core.Middleware;
 using EffinitiveFramework.Core.OpenApi;
+using EffinitiveFramework.Core.RateLimiting;
 using EffinitiveFramework.Core.StaticFiles;
 using EffinitiveFramework.Core.Transport;
 #if NET10_0_OR_GREATER
@@ -35,6 +36,7 @@ public sealed partial class EffinitiveServer : IDisposable
     private readonly MiddlewarePipeline? _middlewarePipeline;
     private readonly StaticFileHandler? _staticFileHandler;
     private readonly OpenApiHandler? _openApiHandler;
+    private readonly RateLimiter? _rateLimiter;
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly bool _isProduction;
     private readonly DateTime _serverStartTime;
@@ -69,7 +71,8 @@ public sealed partial class EffinitiveServer : IDisposable
         IServiceProvider? serviceProvider = null,
         MiddlewarePipeline? middlewarePipeline = null,
         StaticFileHandler? staticFileHandler = null,
-        OpenApiHandler? openApiHandler = null)
+        OpenApiHandler? openApiHandler = null,
+        RateLimiter? rateLimiter = null)
     {
         _options = options;
         _router = router;
@@ -77,6 +80,7 @@ public sealed partial class EffinitiveServer : IDisposable
         _middlewarePipeline = middlewarePipeline;
         _staticFileHandler = staticFileHandler;
         _openApiHandler = openApiHandler;
+        _rateLimiter = rateLimiter;
         _metrics = new ServerMetrics();
         _connectionLimit = new SemaphoreSlim(_options.MaxConcurrentConnections);
         _connectionPool = new DefaultObjectPool<HttpConnection>(

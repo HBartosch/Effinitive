@@ -1,4 +1,6 @@
 using EffinitiveFramework.Core;
+using EffinitiveFramework.Core.OpenApi;
+using EffinitiveFramework.Core.RateLimiting;
 
 namespace EffinitiveFramework.Sample.Endpoints;
 
@@ -6,6 +8,12 @@ namespace EffinitiveFramework.Sample.Endpoints;
 /// Example of NoRequestEndpointBase - simple GET endpoint without request body
 /// Returns synchronously from in-memory data
 /// </summary>
+/// <remarks>
+/// Exempt from rate limiting: a load balancer polling this must keep getting an answer even while the
+/// caller's address is being throttled for everything else.
+/// </remarks>
+[DisableRateLimit]
+[OpenApiOperation(Summary = "Health check", Tags = "Health")]
 public class HealthCheckEndpoint : NoRequestEndpointBase<HealthCheckResponse>
 {
     protected override string Method => "GET";

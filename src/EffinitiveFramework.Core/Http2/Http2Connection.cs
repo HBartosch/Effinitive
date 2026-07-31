@@ -75,13 +75,21 @@ public class Http2Connection : IAsyncDisposable
     private readonly int _maxPushedStreams;
     private readonly int _maxPushedResourceSize;
     
-    public Http2Connection(Stream stream, Func<HttpRequest, Task<HttpResponse>>? requestHandler = null, 
-        int maxPushedStreams = 10, int maxPushedResourceSize = 1024 * 1024)
+    // Peer address for the whole connection — stamped onto every request built from its streams.
+    // The string form is cached alongside it so per-request stamping never allocates.
+    private readonly System.Net.IPAddress? _remoteIpAddress;
+    private readonly string? _remoteIpText;
+
+    public Http2Connection(Stream stream, Func<HttpRequest, Task<HttpResponse>>? requestHandler = null,
+        int maxPushedStreams = 10, int maxPushedResourceSize = 1024 * 1024,
+        System.Net.IPAddress? remoteIpAddress = null)
     {
         _stream = stream;
         _requestHandler = requestHandler;
         _maxPushedStreams = maxPushedStreams;
         _maxPushedResourceSize = maxPushedResourceSize;
+        _remoteIpAddress = remoteIpAddress;
+        _remoteIpText = remoteIpAddress?.ToString();
         _hpackDecoder = new HpackDecoder((int)_headerTableSize, (int)_maxHeaderListSize);
     }
     
@@ -747,7 +755,8 @@ public class Http2Connection : IAsyncDisposable
             stream.DataBuffer.Position = 0;
             var bodyBytes = stream.DataBuffer.ToArray();
             
-            var request = Http2RequestConverter.ConvertToHttp1Request(headers, bodyBytes);
+            var request = Http2RequestConverter.ConvertToHttp1Request(headers, bodyBytes, _remoteIpAddress);
+            request.RemoteIpAddressText = _remoteIpText;
             
             // Process request through handler
             HttpResponse response;

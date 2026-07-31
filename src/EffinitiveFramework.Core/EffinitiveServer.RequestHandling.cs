@@ -35,6 +35,37 @@ public sealed partial class EffinitiveServer
             return;
         }
 
+        // For HEAD, find the GET route
+        var methodForRoute = request.Method;
+        if (request.Method.Equals(HttpMethods.Head, StringComparison.OrdinalIgnoreCase))
+            methodForRoute = "GET";
+
+        RouteMatch? route = null;
+
+        // Rate limiting runs ahead of static files and the OpenAPI document so those are covered too,
+        // and ahead of the 404 path so unrouted floods are rejected rather than answered.
+        //
+        // It needs the route early, because [DisableRateLimit] is meaningless if the global limit has
+        // already rejected the request. The lookup is resolved here and reused below rather than
+        // repeated — and only when a limiter is configured, so a server without one keeps letting
+        // static files short-circuit before any routing work.
+        if (_rateLimiter != null)
+        {
+            route = _router.FindRoute(methodForRoute.AsSpan(), request.Path.AsSpan());
+            var limitedEndpoint = route?.EndpointType;
+
+            if (limitedEndpoint == null || !_rateLimiter.IsExempt(limitedEndpoint))
+            {
+                if (_rateLimiter.TryRejectGlobal(request, response))
+                    return;
+
+                // An endpoint policy narrows the global one rather than replacing it, so both are spent.
+                if (limitedEndpoint != null &&
+                    _rateLimiter.TryRejectEndpoint(request, response, limitedEndpoint))
+                    return;
+            }
+        }
+
         // OpenAPI document and UI: served from pre-built buffers before routing, so the document's
         // own paths never need to occupy the route table.
         if (_openApiHandler != null &&
@@ -75,13 +106,8 @@ public sealed partial class EffinitiveServer
             return;
         }
 
-        // For HEAD, find the GET route
-        var methodForRoute = request.Method;
-        if (request.Method.Equals(HttpMethods.Head, StringComparison.OrdinalIgnoreCase))
-            methodForRoute = "GET";
-
-        // Find route
-        var route = _router.FindRoute(methodForRoute.AsSpan(), request.Path.AsSpan());
+        // Already resolved above when rate limiting is enabled; otherwise this is the only lookup.
+        route ??= _router.FindRoute(methodForRoute.AsSpan(), request.Path.AsSpan());
 
         if (route == null)
         {

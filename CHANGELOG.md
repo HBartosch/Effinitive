@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-07-29
+
+### Added
+- **Rate limiting** — new `UseRateLimiting()` applies a token-bucket allowance per client IP across
+  HTTP/1.1, HTTP/2 and HTTP/3, returning `429 Too Many Requests` with `Retry-After` and a
+  `ProblemDetails` body. Applied before routing, so static files, the OpenAPI document, and floods aimed
+  at nonexistent paths are all covered. See [docs/RateLimiting.md](docs/RateLimiting.md).
+- **Per-endpoint limits** — `[RateLimit(PermitLimit, WindowSeconds)]` gives an endpoint its own tighter
+  allowance in addition to the global one, and `[DisableRateLimit]` exempts an endpoint entirely so
+  health checks keep answering while a caller is throttled elsewhere.
+- **Reverse-proxy support** — `AddTrustedProxy()` opts into `X-Forwarded-For`, which is otherwise
+  ignored. The chain is walked right-to-left skipping known proxies, so the client identity comes from
+  what your own infrastructure observed rather than what the caller claimed.
+- **Bounded client tracking** — `MaxTrackedClients` (default 100,000) caps memory. Allowances idle for a
+  full window have refilled to capacity and are dropped first, which loses no information; only then are
+  the least recently seen clients evicted.
+- **`HttpRequest.RemoteIpAddress`** — the peer address, captured once per connection and stamped onto
+  every request. HTTP/2 and HTTP/3 build their requests separately and both now carry it.
+- **429 support** — `Too Many Requests` added to the response writer's cached status lines and to
+  `HttpResponse.GetStatusText()`, so the status line is well-formed rather than falling back to a bare
+  code. `Retry-After`, `X-Forwarded-For`, and the `X-RateLimit-*` names added to `HeaderNames`.
+
 ## [2.4.0] - 2026-07-29
 
 ### Added

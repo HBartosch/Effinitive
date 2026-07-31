@@ -23,6 +23,7 @@ public static class HeaderNames
     public const string LastModified = "Last-Modified";
     public const string Pragma = "Pragma";
     public const string Range = "Range";
+    public const string RetryAfter = "Retry-After";
     public const string SecWebSocketAccept = "Sec-WebSocket-Accept";
     public const string SetCookie = "Set-Cookie";
     public const string SecWebSocketKey = "Sec-WebSocket-Key";
@@ -30,6 +31,13 @@ public static class HeaderNames
     public const string TransferEncoding = "Transfer-Encoding";
     public const string Upgrade = "Upgrade";
     public const string Vary = "Vary";
+    public const string XForwardedFor = "X-Forwarded-For";
+
+    // The de-facto rate-limit headers. The IETF draft drops the X- prefix, but the prefixed forms are
+    // what clients and gateways actually look for today.
+    public const string XRateLimitLimit = "X-RateLimit-Limit";
+    public const string XRateLimitRemaining = "X-RateLimit-Remaining";
+    public const string XRateLimitReset = "X-RateLimit-Reset";
 }
 
 public static class MediaTypes

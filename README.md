@@ -37,6 +37,7 @@ A high-performance C# web framework designed to outperform FastEndpoints and com
 - **Response compression** - Gzip middleware with single-pass serialize+compress pipeline
 - **Response caching** - Opt-in `[ResponseCache]` middleware serving repeat GETs from memory, with `Cache-Control`/`Vary`/`Age` headers, ETag revalidation, and write-through invalidation ([docs](docs/ResponseCaching.md))
 - **OpenAPI / Swagger** - `UseOpenApi()` serves an OpenAPI 3.0.3 document and Swagger UI, generated once at startup from the route table with zero per-request cost ([docs](docs/OpenApi.md))
+- **Rate limiting** - `UseRateLimiting()` applies a token-bucket allowance per client IP with `[RateLimit]` / `[DisableRateLimit]` overrides, bounded memory, and reverse-proxy support ([docs](docs/RateLimiting.md))
 - **Custom HTTP server** with direct socket handling for maximum performance
 - **High-performance transport layer** - `IOQueue`/`SocketSenderPool` architecture mirroring Kestrel's design
 - **HTTP/2 support** via ALPN negotiation with binary framing and HPACK compression
@@ -439,6 +440,18 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - **Struct Types** - Value types for small, frequently-used data
 - **Unsafe Code** - Low-level optimizations where beneficial
 
+## 🆕 What's New in v2.5.0
+
+| Feature | Details |
+|---|---|
+| Rate limiting | `UseRateLimiting()` — token-bucket allowance per client IP, returning `429` with `Retry-After`. Works across HTTP/1.1, HTTP/2 and HTTP/3. |
+| Applied before routing | Static files, the OpenAPI document, and floods at nonexistent paths are all covered. |
+| Per-endpoint overrides | `[RateLimit(PermitLimit = 5, WindowSeconds = 60)]` tightens one endpoint; `[DisableRateLimit]` exempts health checks entirely. |
+| Reverse-proxy aware | `AddTrustedProxy()` opts into `X-Forwarded-For`; without it the header is ignored, since a client-supplied header would otherwise bypass the limit. |
+| Bounded memory | `MaxTrackedClients` caps tracked allowances, so rotating source addresses cannot exhaust memory. |
+
+See [docs/RateLimiting.md](docs/RateLimiting.md).
+
 ## 🆕 What's New in v2.4.0
 
 | Feature | Details |
@@ -500,7 +513,7 @@ See [RELEASE_NOTES_v2.0.0.md](RELEASE_NOTES_v2.0.0.md) for the full release note
 - [x] ~~HTTP/3 / QUIC protocol~~ ✅ **IMPLEMENTED v2.0.0** (Experimental, .NET 10+)
 - [x] ~~Response caching~~ ✅ **IMPLEMENTED v2.3.0** (Opt-in in-memory store + client cache headers)
 - [x] ~~OpenAPI/Swagger integration~~ ✅ **IMPLEMENTED v2.4.0** (OpenAPI 3.0.3 document + Swagger UI, generated at startup)
-- [ ] Rate limiting
+- [x] ~~Rate limiting~~ ✅ **IMPLEMENTED v2.5.0** (Token bucket per client IP, with per-endpoint overrides)
 
 ## 🤝 Contributing
 

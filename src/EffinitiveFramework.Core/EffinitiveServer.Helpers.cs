@@ -219,7 +219,10 @@ public sealed partial class EffinitiveServer
             return response;
         }
 
-        var http2Connection = new Http2Connection(connection.Stream!, RequestHandler);
+        var http2Connection = new Http2Connection(
+            connection.Stream!,
+            RequestHandler,
+            remoteIpAddress: connection.RemoteIpAddress);
         
         try
         {

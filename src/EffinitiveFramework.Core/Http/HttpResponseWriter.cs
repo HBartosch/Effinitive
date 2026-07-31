@@ -33,6 +33,7 @@ public static class HttpResponseWriter
         [405] = "HTTP/1.1 405 Method Not Allowed\r\n"u8.ToArray(),
         [414] = "HTTP/1.1 414 URI Too Long\r\n"u8.ToArray(),
         [416] = "HTTP/1.1 416 Range Not Satisfiable\r\n"u8.ToArray(),
+        [429] = "HTTP/1.1 429 Too Many Requests\r\n"u8.ToArray(),
         [431] = "HTTP/1.1 431 Request Header Fields Too Large\r\n"u8.ToArray(),
         [500] = "HTTP/1.1 500 Internal Server Error\r\n"u8.ToArray(),
         [501] = "HTTP/1.1 501 Not Implemented\r\n"u8.ToArray(),

@@ -1,6 +1,7 @@
 using EffinitiveFramework.Core;
 using EffinitiveFramework.Core.Caching;
 using EffinitiveFramework.Core.OpenApi;
+using EffinitiveFramework.Core.RateLimiting;
 
 namespace EffinitiveFramework.Sample.Endpoints;
 
@@ -14,6 +15,7 @@ namespace EffinitiveFramework.Sample.Endpoints;
 /// </para>
 /// </summary>
 [ResponseCache(Duration = 30)]
+[RateLimit(PermitLimit = 5, WindowSeconds = 60)]
 [OpenApiOperation(
     Summary = "Sales report",
     Description = "Expensive to compute, so the response is cached for 30 seconds. A POST to the same path invalidates it.",

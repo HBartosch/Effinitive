@@ -6,6 +6,7 @@ using EffinitiveFramework.Core.DependencyInjection;
 using EffinitiveFramework.Core.Middleware;
 using EffinitiveFramework.Core.Http;
 using EffinitiveFramework.Core.OpenApi;
+using EffinitiveFramework.Core.RateLimiting;
 using EffinitiveFramework.Core.StaticFiles;
 using EffinitiveFramework.Core.WebSocket;
 
@@ -23,6 +24,7 @@ public sealed class EffinitiveAppBuilder
     private Assembly? _endpointsAssembly;
     private StaticFileHandler? _staticFileHandler;
     private OpenApiOptions? _openApiOptions;
+    private RateLimitOptions? _rateLimitOptions;
 
     // Registration order of the compression and caching middleware, used to warn about the one
     // ordering that silently misbehaves (see Build()). -1 means "not registered".
@@ -227,6 +229,30 @@ public sealed class EffinitiveAppBuilder
     }
 
     /// <summary>
+    /// Enable per-client rate limiting. A token-bucket allowance is tracked per client IP: callers may
+    /// burst up to <c>PermitLimit</c> requests and then sustain the refill rate, and requests over the
+    /// limit get <c>429 Too Many Requests</c> with <c>Retry-After</c>.
+    /// <para>
+    /// The limit applies server-wide, including static files, the OpenAPI document, and unrouted paths.
+    /// Use <c>[RateLimit]</c> to give an endpoint a tighter allowance of its own, and
+    /// <c>[DisableRateLimit]</c> to exempt one entirely.
+    /// </para>
+    /// <para>
+    /// Behind a reverse proxy, every request arrives from the proxy's address — call
+    /// <c>AddTrustedProxy()</c> so the client is taken from <c>X-Forwarded-For</c> instead. Without
+    /// that, the header is ignored, because trusting it from arbitrary callers would let anyone bypass
+    /// the limit.
+    /// </para>
+    /// </summary>
+    public EffinitiveAppBuilder UseRateLimiting(Action<RateLimitOptions>? configure = null)
+    {
+        var options = new RateLimitOptions();
+        configure?.Invoke(options);
+        _rateLimitOptions = options;
+        return this;
+    }
+
+    /// <summary>
     /// Map endpoints from specified assembly
     /// </summary>
     public EffinitiveAppBuilder MapEndpoints(Assembly assembly)
@@ -306,7 +332,11 @@ public sealed class EffinitiveAppBuilder
                 _serverOptions.JsonOptions);
         }
 
-        return new EffinitiveApp(_serverOptions, _router, serviceProvider, middlewarePipeline, _staticFileHandler, openApiHandler);
+        var rateLimiter = _rateLimitOptions != null
+            ? new RateLimiter(_rateLimitOptions, _serverOptions.JsonOptions)
+            : null;
+
+        return new EffinitiveApp(_serverOptions, _router, serviceProvider, middlewarePipeline, _staticFileHandler, openApiHandler, rateLimiter);
     }
 
     private void RegisterEndpoints(Assembly assembly, IServiceProvider serviceProvider)
@@ -410,12 +440,12 @@ public sealed class EffinitiveApp : IDisposable
     /// </summary>
     public IServiceProvider? Services => _serviceProvider;
 
-    internal EffinitiveApp(ServerOptions options, Router router, IServiceProvider? serviceProvider = null, MiddlewarePipeline? middlewarePipeline = null, StaticFileHandler? staticFileHandler = null, OpenApiHandler? openApiHandler = null)
+    internal EffinitiveApp(ServerOptions options, Router router, IServiceProvider? serviceProvider = null, MiddlewarePipeline? middlewarePipeline = null, StaticFileHandler? staticFileHandler = null, OpenApiHandler? openApiHandler = null, RateLimiter? rateLimiter = null)
     {
         _options = options;
         _serviceProvider = serviceProvider;
         _middlewarePipeline = middlewarePipeline;
-        _server = new EffinitiveServer(options, router, serviceProvider, middlewarePipeline, staticFileHandler, openApiHandler);
+        _server = new EffinitiveServer(options, router, serviceProvider, middlewarePipeline, staticFileHandler, openApiHandler, rateLimiter);
     }
 
     /// <summary>

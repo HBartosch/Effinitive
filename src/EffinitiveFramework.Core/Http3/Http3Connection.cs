@@ -47,11 +47,26 @@ public sealed class Http3Connection : IAsyncDisposable
     private const long H3InternalError = 0x0102;
     private const long H3ClosedCriticalStream = 0x0104;
 
+    // Peer address for the whole QUIC connection — stamped onto every request built from its streams.
+    // The string form is cached alongside it so per-request stamping never allocates.
+    private readonly System.Net.IPAddress? _remoteIpAddress;
+    private readonly string? _remoteIpText;
+
     public Http3Connection(QuicConnection quicConnection, Func<HttpRequest, Task<HttpResponse>>? requestHandler = null)
     {
         _quicConnection = quicConnection;
         _requestHandler = requestHandler;
         _maxConcurrentStreams = new SemaphoreSlim(256, 256);
+
+        // Unmap IPv4-mapped IPv6 addresses so a client reaches the same rate-limit partition whether it
+        // arrives over HTTP/3 or HTTP/1.1.
+        if (quicConnection.RemoteEndPoint is System.Net.IPEndPoint remote)
+        {
+            _remoteIpAddress = remote.Address.IsIPv4MappedToIPv6
+                ? remote.Address.MapToIPv4()
+                : remote.Address;
+            _remoteIpText = _remoteIpAddress.ToString();
+        }
     }
 
     /// <summary>
@@ -202,7 +217,8 @@ public sealed class Http3Connection : IAsyncDisposable
             }
 
             // Convert to HTTP request
-            var request = Http2RequestConverter.ConvertToHttp1Request(headers, body);
+            var request = Http2RequestConverter.ConvertToHttp1Request(headers, body, _remoteIpAddress);
+            request.RemoteIpAddressText = _remoteIpText;
 
             // Process request
             HttpResponse response;
