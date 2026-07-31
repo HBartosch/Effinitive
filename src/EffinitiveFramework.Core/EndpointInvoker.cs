@@ -14,6 +14,13 @@ public sealed class EndpointInvoker
     public required Type RequestType { get; init; }
 
     /// <summary>
+    /// The TResponse type extracted from IEndpoint&lt;TRequest,TResponse&gt;. Not used on the request
+    /// path — it exists so tooling (OpenAPI generation) can describe what an endpoint returns without
+    /// repeating the interface reflection done here.
+    /// </summary>
+    public required Type ResponseType { get; init; }
+
+    /// <summary>
     /// Route-parameter setters keyed by parameter name (case-insensitive).
     /// Each entry holds the <see cref="PropertyInfo"/> (for type conversion) and a compiled
     /// setter that avoids <see cref="PropertyInfo.SetValue"/> boxing.
@@ -81,6 +88,7 @@ public sealed class EndpointInvoker
         return new EndpointInvoker
         {
             RequestType      = requestType,
+            ResponseType     = responseType,
             RouteParamSetters = routeParamSetters,
             SetHttpContext   = setHttpContext,
             GetContentType   = getContentType,

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-29
+
+### Added
+- **OpenAPI / Swagger integration** — new `UseOpenApi()` serves an OpenAPI 3.0.3 document at
+  `/openapi/v1.json` and a Swagger UI page at `/swagger`. The document is generated once at startup from
+  the frozen route table and served from a pre-built byte buffer, so there is no per-request reflection
+  and no cost when the feature is not enabled. See [docs/OpenApi.md](docs/OpenApi.md).
+- **Automatic endpoint description** — routes, path parameters (typed from the matching request
+  property), request bodies, response schemas, and content types are all derived from metadata the
+  builder already resolved, with no attributes required.
+- **Documentation attributes** — `[OpenApiOperation]` (summary, description, tags, operation id,
+  deprecated), `[OpenApiResponse]` (repeatable, per status code), `[OpenApiParameter]` (query and header
+  parameters, which cannot be inferred because endpoints read them imperatively), and `[OpenApiIgnore]`.
+- **Schema generation from existing metadata** — property names follow the server's configured
+  `JsonSerializerOptions` naming policy so schemas match the wire format; `[JsonPropertyName]` and
+  `[JsonIgnore]` are honored; and the DataAnnotations already used for validation (`[Required]`,
+  `[Range]`, `[StringLength]`, `[MinLength]`/`[MaxLength]`, `[RegularExpression]`, `[EmailAddress]`)
+  become schema constraints. Complex types are emitted into `components/schemas` and referenced by
+  `$ref`, with self-referencing types terminating correctly.
+- **Security schemes** — `AddJwtBearer()` and `AddApiKey()` match the defaults of the existing
+  `JwtAuthenticationHandler` and `ApiKeyAuthenticationHandler`. Operations carrying `[Authorize]`
+  reference the registered schemes; `[AllowAnonymous]` emits an empty requirement.
+- **Document revalidation** — the document carries a strong `ETag`, so `If-None-Match` returns `304`.
+- **`Router.GetRegisteredRoutes()`** — exposes the registered routes as `RouteDescriptor` values after
+  `Freeze()`. WebSocket routes are excluded; OpenAPI 3.0 cannot describe them.
+- **`EndpointInvoker.ResponseType`** — the `TResponse` type was already extracted when building the
+  invoker and then discarded; it is now available to tooling.
+
 ## [2.3.0] - 2026-07-28
 
 ### Added

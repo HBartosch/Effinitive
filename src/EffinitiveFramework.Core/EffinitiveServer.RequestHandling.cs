@@ -35,6 +35,15 @@ public sealed partial class EffinitiveServer
             return;
         }
 
+        // OpenAPI document and UI: served from pre-built buffers before routing, so the document's
+        // own paths never need to occupy the route table.
+        if (_openApiHandler != null &&
+            request.Method is "GET" or "HEAD" &&
+            _openApiHandler.TryServe(request, response))
+        {
+            return;
+        }
+
         // Static file fast-path: serve files from disk before any routing or middleware.
         // The handler streams from the filesystem and applies its own conditional/range
         // logic, including the HEAD-specific Content-Length (RFC 9110 §9.3.2).

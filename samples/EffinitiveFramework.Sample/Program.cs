@@ -36,6 +36,17 @@ var app = EffinitiveApp
         compressionLevel: CompressionLevel.Fastest,
         minimumSize: 1024)
 
+    // ── v2.4: OpenAPI / Swagger ────────────────────────────────────────────
+    // Serves the spec at /openapi/v1.json and Swagger UI at /swagger, generated
+    // once at startup from the registered endpoints.
+    .UseOpenApi(api =>
+    {
+        api.Title = "EffinitiveFramework Sample API";
+        api.Version = "v1";
+        api.Description = "Demonstrates the framework's OpenAPI integration.";
+        api.AddJwtBearer();
+    })
+
     // ── v2.3: Response caching ─────────────────────────────────────────────
     // Opt-in per endpoint via [ResponseCache]. Repeat GET/HEAD requests are served
     // from memory without running the endpoint; a write to the same path evicts it.
