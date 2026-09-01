@@ -58,6 +58,23 @@ internal sealed class ListenerBinding
             SslOptions = BuildSslOptions(certificate, alpn),
         };
 
+    /// <summary>
+    /// A listener whose certificate is resolved on every handshake, so a
+    /// replacement on disk takes effect without a restart.
+    /// </summary>
+    internal static ListenerBinding Secure(
+        int port,
+        Func<X509Certificate2> certificateSelector,
+        IReadOnlyList<SslApplicationProtocol>? alpn,
+        string name) =>
+        new()
+        {
+            Port = port,
+            IsSecure = true,
+            Name = name,
+            SslOptions = BuildSslOptions(certificateSelector, alpn),
+        };
+
     internal static SslServerAuthenticationOptions BuildSslOptions(
         X509Certificate2 certificate,
         IReadOnlyList<SslApplicationProtocol>? alpn) =>
@@ -68,6 +85,22 @@ internal sealed class ListenerBinding
             EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
             // A client offering both protocols takes the server's first match,
             // so this list decides what the listener actually serves.
+            ApplicationProtocols = [.. alpn ?? DefaultAlpn],
+            AllowTlsResume = true,
+        };
+
+    internal static SslServerAuthenticationOptions BuildSslOptions(
+        Func<X509Certificate2> certificateSelector,
+        IReadOnlyList<SslApplicationProtocol>? alpn) =>
+        new()
+        {
+            // The host name is deliberately ignored. This listener serves one
+            // certificate, and a client that omits SNI passes null here; keying
+            // off the name would leave such a client with no certificate at all
+            // rather than the one the listener was configured with.
+            ServerCertificateSelectionCallback = (_, _) => certificateSelector(),
+            ClientCertificateRequired = false,
+            EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
             ApplicationProtocols = [.. alpn ?? DefaultAlpn],
             AllowTlsResume = true,
         };

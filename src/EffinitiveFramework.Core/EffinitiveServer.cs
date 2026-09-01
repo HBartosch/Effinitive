@@ -58,6 +58,7 @@ public sealed partial class EffinitiveServer : IDisposable
     // shape; everything here is additive.
     private readonly List<Socket> _extraListeners = [];
     private readonly List<Task> _extraAcceptTasks = [];
+    private readonly List<CertificateReloader> _certificateReloaders = [];
 #if NET10_0_OR_GREATER
     private Task? _http3AcceptTask;
 #endif
@@ -175,9 +176,21 @@ public sealed partial class EffinitiveServer : IDisposable
                         $"  listener '{listener.Name ?? listener.Port.ToString()}' on {listener.Port} skipped: TLS requested but no certificate resolved");
                     continue;
                 }
-                binding = ListenerBinding.Secure(
-                    listener.Port, listener.Tls.Certificate, listener.AlpnProtocols,
-                    listener.Name ?? listener.Port.ToString());
+                var label = listener.Name ?? listener.Port.ToString();
+                if (listener.Tls.ReloadOnChange)
+                {
+                    var reloader = new CertificateReloader(
+                        listener.Tls,
+                        ex => { if (!_isProduction) Console.WriteLine($"certificate reload failed on {label}: {ex.Message}"); });
+                    _certificateReloaders.Add(reloader);
+                    binding = ListenerBinding.Secure(
+                        listener.Port, () => reloader.Current, listener.AlpnProtocols, label);
+                }
+                else
+                {
+                    binding = ListenerBinding.Secure(
+                        listener.Port, listener.Tls.Certificate, listener.AlpnProtocols, label);
+                }
             }
             else if (listener.UseHttp2Cleartext)
             {
@@ -299,6 +312,8 @@ public sealed partial class EffinitiveServer : IDisposable
         _httpsListener?.Dispose();
         foreach (var listener in _extraListeners)
             listener.Dispose();
+        foreach (var reloader in _certificateReloaders)
+            reloader.Dispose();
         _connectionLimit.Dispose();
         _shutdownCts.Dispose();
         foreach (var pool in _senderPools)

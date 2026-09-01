@@ -29,6 +29,32 @@ public sealed class TlsOptions
     public string? CertificatePassword { get; set; }
 
     /// <summary>
+    /// Watch <see cref="CertificatePath"/> and <see cref="KeyPath"/> and pick up a
+    /// replacement without a restart. New handshakes use the new certificate;
+    /// connections already established keep the one they negotiated with.
+    /// </summary>
+    /// <remarks>
+    /// Off by default, because it costs a periodic stat of two files and most
+    /// servers are restarted on renewal anyway. Turn it on where a certificate
+    /// is renewed underneath a long-running process, which for a 90-day
+    /// certificate is every deployment-free month or two.
+    /// </remarks>
+    public bool ReloadOnChange { get; set; }
+
+    /// <summary>
+    /// How often the certificate files are checked when <see cref="ReloadOnChange"/>
+    /// is set. Default is one second.
+    /// </summary>
+    /// <remarks>
+    /// Polled rather than watched with <c>FileSystemWatcher</c> on purpose.
+    /// Renewal tools install a new pair by writing a temporary file and renaming
+    /// it over the old one, and a rename into a bind-mounted directory is
+    /// exactly the case inotify reports unreliably across container filesystems.
+    /// Two stat calls a second is a rounding error against missing a rotation.
+    /// </remarks>
+    public TimeSpan ReloadPollInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// Load certificate from path if configured
     /// </summary>
     public void LoadCertificate()

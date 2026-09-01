@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>2.7.0</Version>
+    <Version>2.8.0</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,7 +19,9 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v2.7.0: Cleartext HTTP/2. A listener created with UseHttp2Cleartext serves HTTP/2 with prior knowledge (RFC 9113 3.3): the client sends the connection preface immediately and the port itself is the agreement, so nothing is negotiated and no certificate is needed. The preface is read and validated as on the TLS path, so a client that opens such a port and speaks HTTP/1.1 is rejected rather than quietly served. This is a property of the listener rather than of the request, so an h2c port is separate from the HTTP/1.1 one.
+    <PackageReleaseNotes>v2.8.0: Certificate rotation without a restart, and a clean TLS close. TlsOptions.ReloadOnChange watches the certificate and key files and resolves the certificate per handshake through ServerCertificateSelectionCallback instead of binding it once at startup, so a renewal on disk takes effect on the next handshake while connections already established keep the certificate they negotiated with. The files are polled rather than watched, because renewal tools install a pair by renaming over the old one and a rename into a bind-mounted directory is the case inotify reports unreliably. A half-written pair simply fails to load and is retried. Separately, connections now send a close_notify alert before closing the socket (RFC 8446 6.1): without it a client cannot tell a complete response from a truncated one.
+
+v2.7.0: Cleartext HTTP/2. A listener created with UseHttp2Cleartext serves HTTP/2 with prior knowledge (RFC 9113 3.3): the client sends the connection preface immediately and the port itself is the agreement, so nothing is negotiated and no certificate is needed. The preface is read and validated as on the TLS path, so a client that opens such a port and speaks HTTP/1.1 is rejected rather than quietly served. This is a property of the listener rather than of the request, so an h2c port is separate from the HTTP/1.1 one.
 
 v2.6.0: Multiple listeners. AddListener() adds a socket beyond UsePort() and UseHttpsPort(), each with its own certificate and its own ALPN list, so one server can offer HTTP/2 and HTTP/1.1 on one port while offering HTTP/1.1 alone on another, or serve two ports from different certificate files. TLS options are now built once per listener at startup instead of being cached in a static field keyed on the certificate, which was correct only while a single TLS listener existed: two listeners sharing a certificate but advertising different protocol lists would each invalidate the other's entry. The lock on that cache is gone with it.
 

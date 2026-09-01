@@ -490,7 +490,26 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
             _reader?.Complete();
             _writer?.Complete();
             if (_stream != null)
+            {
+                // RFC 8446 §6.1: close the TLS session before closing the socket.
+                // DisposeAsync alone drops the connection without a close_notify,
+                // which leaves a client unable to tell a complete response from a
+                // truncated one. Best effort: the peer may already be gone, and
+                // failing to say goodbye is not a reason to fail the teardown.
+                if (_stream is SslStream ssl)
+                {
+                    try
+                    {
+                        await ssl.ShutdownAsync();
+                    }
+                    catch (Exception ex) when (ex is IOException or ObjectDisposedException
+                                                  or InvalidOperationException or SocketException)
+                    {
+                    }
+                }
+
                 await _stream.DisposeAsync();
+            }
             _socket?.Dispose();
         }
     }

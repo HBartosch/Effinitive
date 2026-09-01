@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-09-01
+
+### Added
+- **Certificate rotation without a restart** — `TlsOptions.ReloadOnChange` watches the certificate and
+  key files and resolves the certificate per handshake through `ServerCertificateSelectionCallback`
+  rather than binding it once into `ServerCertificate`. A renewal on disk takes effect on the next
+  handshake; connections already established keep the certificate they negotiated with, since TLS
+  authenticates the peer once and there is nothing to re-present mid-connection.
+- The files are polled on an interval (`ReloadPollInterval`, one second by default) rather than watched
+  with `FileSystemWatcher`. Renewal tools install a new pair by writing a temporary file and renaming it
+  over the old one, and a rename into a bind-mounted directory is exactly the case inotify reports
+  unreliably across container filesystems. A pair caught half-written simply fails to load and is
+  retried on the next tick rather than being treated as a rotation.
+
+### Fixed
+- **`close_notify` on connection close** — TLS connections now send a `close_notify` alert before
+  closing the socket, per RFC 8446 §6.1. `SslStream.DisposeAsync()` does not send one on its own, so a
+  client had no way to distinguish a complete response from a truncated one. Best effort: the peer may
+  already be gone, and failing to say goodbye is not a reason to fail the teardown.
+
 ## [2.7.0] - 2026-09-01
 
 ### Added
