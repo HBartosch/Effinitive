@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>2.5.0</Version>
+    <Version>2.5.1</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,7 +19,9 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v2.5.0: Rate limiting. UseRateLimiting() applies a token-bucket allowance per client IP across HTTP/1.1, HTTP/2 and HTTP/3, returning 429 Too Many Requests with Retry-After and a ProblemDetails body. Applied before routing, so static files, the OpenAPI document, and floods at nonexistent paths are covered. [RateLimit(PermitLimit, WindowSeconds)] gives an endpoint its own tighter allowance and [DisableRateLimit] exempts one entirely. X-Forwarded-For is honored only from configured trusted proxies, walking the chain right-to-left. Tracked clients are capped so rotating source addresses cannot exhaust memory. Also adds HttpRequest.RemoteIpAddress and 429 to the cached status lines.
+    <PackageReleaseNotes>v2.5.1: A header line whose CRLF is split across two TCP reads is now treated as an incomplete request rather than a malformed one. The HTTP/1.1 header parser read the trailing LF with a check that could not distinguish "the buffer ended on the CR" from "the byte after the CR is not an LF", so a well-formed request answered 400 purely because of where the kernel segmented it. The request line already handled this correctly; the header path now matches it.
+
+v2.5.0: Rate limiting. UseRateLimiting() applies a token-bucket allowance per client IP across HTTP/1.1, HTTP/2 and HTTP/3, returning 429 Too Many Requests with Retry-After and a ProblemDetails body. Applied before routing, so static files, the OpenAPI document, and floods at nonexistent paths are covered. [RateLimit(PermitLimit, WindowSeconds)] gives an endpoint its own tighter allowance and [DisableRateLimit] exempts one entirely. X-Forwarded-For is honored only from configured trusted proxies, walking the chain right-to-left. Tracked clients are capped so rotating source addresses cannot exhaust memory. Also adds HttpRequest.RemoteIpAddress and 429 to the cached status lines.
 
 v2.4.0: OpenAPI/Swagger integration. UseOpenApi() serves an OpenAPI 3.0.3 document at /openapi/v1.json and Swagger UI at /swagger, generated once at startup from the route table and served from a pre-built buffer, so there is no per-request cost. Routes, path parameter types, request bodies, response schemas, and content types are inferred from existing metadata; [OpenApiOperation], [OpenApiResponse], [OpenApiParameter], and [OpenApiIgnore] add what cannot be. Schema property names follow the server's JsonSerializerOptions and DataAnnotations become schema constraints. Security schemes match the built-in JWT and API-key handlers. Also adds Router.GetRegisteredRoutes() and EndpointInvoker.ResponseType.
 

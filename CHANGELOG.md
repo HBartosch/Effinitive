@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-09-01
+
+### Fixed
+- **Header CRLF split across TCP reads** — a request whose header line was cut between the CR and the
+  LF was answered `400 Bad Request` instead of being carried across the read. `TryParseHeaders` read the
+  trailing LF as `if (!reader.TryRead(out lf) || lf != Lf) throw`, which cannot tell "the buffer ended on
+  the CR" apart from "the byte after the CR is not an LF"; the first case is an incomplete request, not a
+  malformed one. `TryParseRequestLine` already made that distinction, and the header path now matches it.
+  A client whose request arrived in more than one segment saw a spurious 400 at one offset per header
+  line, so the failure rate scaled with header count rather than being a fixed edge case.
+- **Regression cover** — `HttpRequestParserFragmentationTests` splits each baseline request shape at every
+  byte offset and asserts that no prefix throws and that every two-segment split still parses, mirroring
+  HttpArena's exhaustive fragmentation sweep.
+
 ## [2.5.0] - 2026-07-29
 
 ### Added

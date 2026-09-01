@@ -379,8 +379,12 @@ public static class HttpRequestParser
             if (!reader.TryReadTo(out ReadOnlySpan<byte> headerLineBytes, Cr))
                 return false;
 
-            // Must be followed by LF
-            if (!reader.TryRead(out byte lf) || lf != Lf)
+            // Must be followed by LF. A buffer that runs out on the CR is a read
+            // that split the CRLF, not a malformed line — ask for more data
+            // rather than rejecting the request (same as the request line above).
+            if (!reader.TryRead(out byte lf))
+                return false;
+            if (lf != Lf)
                 throw HttpParseException.BadRequest("Invalid header line ending (expected CRLF)");
 
             totalHeaderBytes += headerLineBytes.Length + 2; // +2 for CRLF
