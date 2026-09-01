@@ -27,6 +27,19 @@ public sealed class ListenerOptions
     /// <summary>Terminate TLS on this listener. Requires a certificate in <see cref="Tls"/>.</summary>
     public bool UseTls { get; set; }
 
+    /// <summary>
+    /// Treat every connection as cleartext HTTP/2 with prior knowledge
+    /// (RFC 9113 §3.3), reading the client connection preface immediately
+    /// rather than parsing an HTTP/1.1 request or negotiating over ALPN.
+    /// </summary>
+    /// <remarks>
+    /// This is a property of the port, not of the request, because prior
+    /// knowledge means exactly that the client sends the preface without
+    /// asking. A listener with this set does not serve HTTP/1.1, so it needs a
+    /// port of its own rather than sharing one with <see cref="ServerOptions.HttpPort"/>.
+    /// </remarks>
+    public bool UseHttp2Cleartext { get; set; }
+
     /// <summary>Certificate source for this listener, independent of every other listener.</summary>
     public TlsOptions Tls { get; set; } = new();
 

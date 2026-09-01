@@ -26,6 +26,13 @@ internal sealed class ListenerBinding
     public required int Port { get; init; }
     public required bool IsSecure { get; init; }
 
+    /// <summary>
+    /// Cleartext HTTP/2 with prior knowledge: the connection is handed to the
+    /// HTTP/2 reader without an HTTP/1.1 parse or an ALPN negotiation, because
+    /// on such a port there is nothing to negotiate.
+    /// </summary>
+    public bool IsHttp2Cleartext { get; init; }
+
     /// <summary>Null on a plaintext listener.</summary>
     public SslServerAuthenticationOptions? SslOptions { get; init; }
 
@@ -34,6 +41,9 @@ internal sealed class ListenerBinding
 
     public static ListenerBinding Plaintext(int port, string name = "") =>
         new() { Port = port, IsSecure = false, Name = name };
+
+    public static ListenerBinding Http2Cleartext(int port, string name = "") =>
+        new() { Port = port, IsSecure = false, IsHttp2Cleartext = true, Name = name };
 
     public static ListenerBinding Secure(
         int port,

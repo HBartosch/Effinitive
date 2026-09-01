@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>2.6.0</Version>
+    <Version>2.7.0</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,7 +19,9 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v2.6.0: Multiple listeners. AddListener() adds a socket beyond UsePort() and UseHttpsPort(), each with its own certificate and its own ALPN list, so one server can offer HTTP/2 and HTTP/1.1 on one port while offering HTTP/1.1 alone on another, or serve two ports from different certificate files. TLS options are now built once per listener at startup instead of being cached in a static field keyed on the certificate, which was correct only while a single TLS listener existed: two listeners sharing a certificate but advertising different protocol lists would each invalidate the other's entry. The lock on that cache is gone with it.
+    <PackageReleaseNotes>v2.7.0: Cleartext HTTP/2. A listener created with UseHttp2Cleartext serves HTTP/2 with prior knowledge (RFC 9113 3.3): the client sends the connection preface immediately and the port itself is the agreement, so nothing is negotiated and no certificate is needed. The preface is read and validated as on the TLS path, so a client that opens such a port and speaks HTTP/1.1 is rejected rather than quietly served. This is a property of the listener rather than of the request, so an h2c port is separate from the HTTP/1.1 one.
+
+v2.6.0: Multiple listeners. AddListener() adds a socket beyond UsePort() and UseHttpsPort(), each with its own certificate and its own ALPN list, so one server can offer HTTP/2 and HTTP/1.1 on one port while offering HTTP/1.1 alone on another, or serve two ports from different certificate files. TLS options are now built once per listener at startup instead of being cached in a static field keyed on the certificate, which was correct only while a single TLS listener existed: two listeners sharing a certificate but advertising different protocol lists would each invalidate the other's entry. The lock on that cache is gone with it.
 
 v2.5.1: A header line whose CRLF is split across two TCP reads is now treated as an incomplete request rather than a malformed one. The HTTP/1.1 header parser read the trailing LF with a check that could not distinguish "the buffer ended on the CR" from "the byte after the CR is not an LF", so a well-formed request answered 400 purely because of where the kernel segmented it. The request line already handled this correctly; the header path now matches it.
 

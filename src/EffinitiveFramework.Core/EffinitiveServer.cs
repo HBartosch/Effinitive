@@ -179,6 +179,10 @@ public sealed partial class EffinitiveServer : IDisposable
                     listener.Port, listener.Tls.Certificate, listener.AlpnProtocols,
                     listener.Name ?? listener.Port.ToString());
             }
+            else if (listener.UseHttp2Cleartext)
+            {
+                binding = ListenerBinding.Http2Cleartext(listener.Port, listener.Name ?? listener.Port.ToString());
+            }
             else
             {
                 binding = ListenerBinding.Plaintext(listener.Port, listener.Name ?? listener.Port.ToString());
@@ -189,10 +193,10 @@ public sealed partial class EffinitiveServer : IDisposable
             _extraAcceptTasks.Add(AcceptConnectionsAsync(socket, binding, _shutdownCts.Token));
 
             var scheme = listener.UseTls ? "https" : "http";
-            var alpn = listener.UseTls
+            var protocols = listener.UseTls
                 ? " [" + string.Join(", ", binding.SslOptions!.ApplicationProtocols!.Select(p => p.ToString())) + "]"
-                : string.Empty;
-            Console.WriteLine($"  {scheme}://localhost:{listener.Port}{alpn}");
+                : listener.UseHttp2Cleartext ? " [h2c, prior knowledge]" : string.Empty;
+            Console.WriteLine($"  {scheme}://localhost:{listener.Port}{protocols}");
         }
 
         await Task.CompletedTask;

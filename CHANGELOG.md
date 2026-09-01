@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-01
+
+### Added
+- **Cleartext HTTP/2 (h2c)** — a listener created with `UseHttp2Cleartext` serves HTTP/2 with prior
+  knowledge (RFC 9113 §3.3). The client sends the connection preface immediately, so nothing is
+  negotiated and no certificate is involved. The preface is read and validated exactly as on the TLS
+  path, so a client that opens such a port and speaks HTTP/1.1 is rejected there rather than quietly
+  served over the wrong protocol.
+- This is a property of the listener rather than of the request, because prior knowledge means the
+  client does not ask. An h2c port therefore does not also serve HTTP/1.1 and needs a port of its own.
+
+### Fixed
+- `HandleHttp2ConnectionAsync` now takes its stream from `GetOrCreateStream()` rather than the `Stream`
+  property. The TLS path is unchanged, but a cleartext connection has no `Stream`: it runs on the
+  socket transport's pipes, which `GetOrCreateStream()` wraps.
+
 ## [2.6.0] - 2026-09-01
 
 ### Added

@@ -219,8 +219,11 @@ public sealed partial class EffinitiveServer
             return response;
         }
 
+        // GetOrCreateStream rather than Stream: on the TLS path this is the
+        // SslStream as before, but a cleartext h2c connection has no Stream at
+        // all — it runs on the socket transport's pipes, which this wraps.
         var http2Connection = new Http2Connection(
-            connection.Stream!,
+            connection.GetOrCreateStream()!,
             RequestHandler,
             remoteIpAddress: connection.RemoteIpAddress);
         

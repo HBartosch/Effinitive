@@ -29,6 +29,16 @@ public sealed partial class EffinitiveServer
                 ioQueue,
                 senderPool);
 
+            // Cleartext HTTP/2 with prior knowledge: nothing was negotiated, the
+            // port itself is the agreement. Http2Connection reads and validates
+            // the client preface, so a client that opens this port and speaks
+            // HTTP/1.1 is rejected there rather than being quietly served.
+            if (binding.IsHttp2Cleartext)
+            {
+                await HandleHttp2ConnectionAsync(connection, cancellationToken);
+                return;
+            }
+
             // Check if HTTP/2 was negotiated
             if (connection.NegotiatedProtocol == "h2")
             {
