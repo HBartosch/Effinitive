@@ -7,10 +7,15 @@ namespace EffinitiveFramework.Tests;
 
 /// <summary>
 /// TCP is a byte stream with no message boundaries, so a request may arrive in
-/// any number of reads split at any offset. RFC 9112 §2.2 frames a request by
-/// its own delimiters and nowhere permits a server to infer malformedness from
-/// where a read happened to end, so an incomplete request must be carried until
-/// it completes, never rejected.
+/// any number of reads split at any offset. RFC 9112 §2.2 delimits a request by
+/// its own syntax: the start-line, then header field lines "until the empty
+/// line", then a body of the indicated length. None of those delimiters is a
+/// read boundary.
+///
+/// RFC 9110 §15.5.1 reserves 400 for "something that is perceived to be a client
+/// error". Where a read happened to end is not something the client did, so a
+/// request truncated mid-arrival must be carried until it completes rather than
+/// rejected.
 ///
 /// These split every request shape at every byte offset. The ones that matter
 /// are the offsets nobody picks by hand: between the CR and the LF of a header

@@ -82,8 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LF was answered `400 Bad Request` instead of being carried across the read. `TryParseHeaders` read the
   trailing LF as `if (!reader.TryRead(out lf) || lf != Lf) throw`, which cannot tell "the buffer ended on
   the CR" apart from "the byte after the CR is not an LF"; the first case is an incomplete request, not a
-  malformed one. RFC 9112 §2.2 frames a request by its own delimiters, and nowhere permits a server to
-  infer malformedness from where a read ended. `TryParseRequestLine` already made that distinction, and
+  malformed one. RFC 9112 §2.2 delimits a request by its own syntax, header field lines running "until
+  the empty line", and RFC 9110 §15.5.1 reserves 400 for "something that is perceived to be a client
+  error" — which where a read ended is not. `TryParseRequestLine` already made that distinction, and
   the header path now matches it. A client whose request arrived in more than one segment saw a spurious
   400 at one offset per header line, so the failure rate scaled with header count rather than being a
   fixed edge case.

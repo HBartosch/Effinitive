@@ -29,10 +29,12 @@ public sealed partial class EffinitiveServer
                 ioQueue,
                 senderPool);
 
-            // Cleartext HTTP/2 with prior knowledge: nothing was negotiated, the
-            // port itself is the agreement. Http2Connection reads and validates
-            // the client preface, so a client that opens this port and speaks
-            // HTTP/1.1 is rejected there rather than being quietly served.
+            // Cleartext HTTP/2 with prior knowledge (RFC 9113 §3.3): the client
+            // "can establish a TCP connection and send the connection preface
+            // followed by HTTP/2 frames", so nothing is negotiated and the port
+            // itself is the agreement. Http2Connection validates the §3.4
+            // preface, so a client that opens this port and speaks HTTP/1.1 is
+            // rejected there rather than being quietly served.
             if (binding.IsHttp2Cleartext)
             {
                 await HandleHttp2ConnectionAsync(connection, cancellationToken);

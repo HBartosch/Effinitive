@@ -380,8 +380,10 @@ public static class HttpRequestParser
                 return false;
 
             // Must be followed by LF. A buffer that runs out on the CR is a read
-            // that split the CRLF, not a malformed line — ask for more data
-            // rather than rejecting the request (same as the request line above).
+            // that split the CRLF, not a malformed line: RFC 9112 §2.2 delimits
+            // header fields by the syntax itself, running until the empty line,
+            // and RFC 9110 §15.5.1 reserves 400 for a client error, which where
+            // a read ended is not. Ask for more data rather than reject.
             if (!reader.TryRead(out byte lf))
                 return false;
             if (lf != Lf)
