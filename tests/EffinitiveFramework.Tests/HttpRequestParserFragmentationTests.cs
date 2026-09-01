@@ -6,37 +6,42 @@ using Xunit;
 namespace EffinitiveFramework.Tests;
 
 /// <summary>
-/// A request that arrives across more than one read must be treated as incomplete,
-/// never as malformed. These split every request shape at every byte offset, the
-/// same sweep HttpArena's validate-frag.py runs over a live socket.
+/// TCP is a byte stream with no message boundaries, so a request may arrive in
+/// any number of reads split at any offset. RFC 9112 §2.2 frames a request by
+/// its own delimiters and nowhere permits a server to infer malformedness from
+/// where a read happened to end, so an incomplete request must be carried until
+/// it completes, never rejected.
 ///
-/// The split points that matter are the ones nobody picks by hand: between the CR
-/// and the LF of a header line, mid Content-Length digits, one byte into the
-/// terminating CRLF. A parser that rejects those answers 400 to a well-formed
-/// request purely because of how the kernel happened to segment it.
+/// These split every request shape at every byte offset. The ones that matter
+/// are the offsets nobody picks by hand: between the CR and the LF of a header
+/// line, mid Content-Length digits, one byte into the terminating CRLF. A parser
+/// that rejects those answers 400 to a well-formed request purely because of how
+/// the kernel segmented it.
 /// </summary>
 public class HttpRequestParserFragmentationTests
 {
-    // The HTTP/1.1 shapes the arena baseline profile defines, in the spellings
-    // that exercise the header, Content-Length and chunked framing paths.
+    // The three body framings RFC 9112 defines for a request — none, §6.2
+    // Content-Length, and §7.1 chunked — each in more than one spelling, since
+    // RFC 9110 §5.1 makes field names case-insensitive and a parser may treat
+    // the two casings by different paths.
     public static TheoryData<string> Shapes() => new()
     {
-        "GET /baseline11?a=13&b=42 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "GET /resource?a=13&b=42 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
 
-        "GET /baseline11?a=13&b=42 HTTP/1.1\r\nHost: localhost\r\n" +
-        "User-Agent: arena-frag/1.0\r\nAccept: text/plain\r\n" +
+        "GET /resource?a=13&b=42 HTTP/1.1\r\nHost: localhost\r\n" +
+        "User-Agent: effinitive-tests/1.0\r\nAccept: text/plain\r\n" +
         "Accept-Encoding: identity\r\nConnection: close\r\n\r\n",
 
-        "GET /baseline11?a=13&b=42 HTTP/1.1\r\nhost: localhost\r\n" +
-        "user-agent: arena-frag/1.0\r\nconnection: close\r\n\r\n",
+        "GET /resource?a=13&b=42 HTTP/1.1\r\nhost: localhost\r\n" +
+        "user-agent: effinitive-tests/1.0\r\nconnection: close\r\n\r\n",
 
-        "POST /baseline11?a=13&b=42 HTTP/1.1\r\nHost: localhost\r\n" +
+        "POST /resource?a=13&b=42 HTTP/1.1\r\nHost: localhost\r\n" +
         "Content-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\n20",
 
-        "POST /baseline11?a=13&b=42 HTTP/1.1\r\nhost: localhost\r\n" +
+        "POST /resource?a=13&b=42 HTTP/1.1\r\nhost: localhost\r\n" +
         "content-type: text/plain\r\ncontent-length: 2\r\nconnection: close\r\n\r\n20",
 
-        "POST /baseline11?a=13&b=42 HTTP/1.1\r\nHost: localhost\r\n" +
+        "POST /resource?a=13&b=42 HTTP/1.1\r\nHost: localhost\r\n" +
         "Content-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
         "2\r\n20\r\n0\r\n\r\n",
     };
@@ -82,7 +87,7 @@ public class HttpRequestParserFragmentationTests
                 $"split at {split}/{bytes.Length} did not parse\n" +
                 $"  ...{Escape(raw[..split])} >>>SPLIT<<< {Escape(raw[split..])}...");
 
-            Assert.Equal("/baseline11?a=13&b=42", request.Path);
+            Assert.Equal("/resource?a=13&b=42", request.Path);
             Assert.Equal("HTTP/1.1", request.HttpVersion);
             Assert.True(request.Headers.ContainsKey("Host") || request.Headers.ContainsKey("host"));
         }

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.1] - 2026-09-01
+
+### Fixed
+- **A partly-arrived WebSocket frame no longer holds back the previous reply** — the connection defers
+  its flush while another frame is already buffered, so a run of replies costs one write rather than one
+  each. The test for "already buffered" was whether any bytes remained, not whether a whole frame had
+  arrived. RFC 6455 §5.2 gives every frame an explicit length, so bytes short of that length offer
+  nothing to process: a complete frame trailed by a single byte of the next one caused the reply to the
+  first to wait on the remainder of the second. A client that waits for that reply before sending
+  anything more never sends the remainder, so the exchange stalled until one side timed out.
+- The batching itself is unchanged when a whole frame really is queued. Measured over a held connection,
+  replies per second at batch depths of 1, 2, 4, 8, 16 and 32 are within noise of the previous build,
+  while a frame followed by a partial frame is now answered in under a millisecond instead of never.
+
 ## [2.8.0] - 2026-09-01
 
 ### Added
@@ -68,12 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LF was answered `400 Bad Request` instead of being carried across the read. `TryParseHeaders` read the
   trailing LF as `if (!reader.TryRead(out lf) || lf != Lf) throw`, which cannot tell "the buffer ended on
   the CR" apart from "the byte after the CR is not an LF"; the first case is an incomplete request, not a
-  malformed one. `TryParseRequestLine` already made that distinction, and the header path now matches it.
-  A client whose request arrived in more than one segment saw a spurious 400 at one offset per header
-  line, so the failure rate scaled with header count rather than being a fixed edge case.
-- **Regression cover** — `HttpRequestParserFragmentationTests` splits each baseline request shape at every
-  byte offset and asserts that no prefix throws and that every two-segment split still parses, mirroring
-  HttpArena's exhaustive fragmentation sweep.
+  malformed one. RFC 9112 §2.2 frames a request by its own delimiters, and nowhere permits a server to
+  infer malformedness from where a read ended. `TryParseRequestLine` already made that distinction, and
+  the header path now matches it. A client whose request arrived in more than one segment saw a spurious
+  400 at one offset per header line, so the failure rate scaled with header count rather than being a
+  fixed edge case.
+- **Regression cover** — `HttpRequestParserFragmentationTests` splits each of the three request body
+  framings at every byte offset and asserts that no prefix throws and that every two-segment split still
+  parses.
 
 ## [2.5.0] - 2026-07-29
 

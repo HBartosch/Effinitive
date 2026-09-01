@@ -117,8 +117,19 @@ public sealed class WebSocketConnection : IAsyncDisposable
 
                 if (header.Fin)
                 {
-                    // Track whether more frames are already buffered so SendAsync can defer its flush.
-                    _hasPendingData = buffer.Length > 0;
+                    // Defer the flush only when another WHOLE frame is already
+                    // buffered, so the response about to be written is certain
+                    // to be followed by another without waiting on the network.
+                    //
+                    // "Any bytes remain" is not the same test. RFC 6455 §5.2
+                    // frames carry a length, so a frame is only actionable once
+                    // that many payload bytes have arrived; a complete frame
+                    // trailed by one byte of the next satisfies "bytes remain"
+                    // while offering nothing to process. Deferring on that holds
+                    // an answer the client has already earned until the rest of
+                    // an unrelated frame arrives, which a client waiting on that
+                    // answer before sending more never sends.
+                    _hasPendingData = HasCompleteFrame(buffer);
                     gotMessage = true;
                     break;
                 }
@@ -186,6 +197,14 @@ public sealed class WebSocketConnection : IAsyncDisposable
         await _reader.CompleteAsync();
         await _writer.CompleteAsync();
     }
+
+    /// <summary>
+    /// Whether <paramref name="buffer"/> already holds a frame in full: a
+    /// parseable header and the whole payload it declares.
+    /// </summary>
+    private static bool HasCompleteFrame(ReadOnlySequence<byte> buffer)
+        => WebSocketFrame.TryParseHeader(buffer, out var header, out var headerConsumed)
+           && buffer.Slice(headerConsumed).Length >= header.PayloadLength;
 
     /// <summary>
     /// Write a WebSocket frame header directly to the PipeWriter. No intermediate buffer.

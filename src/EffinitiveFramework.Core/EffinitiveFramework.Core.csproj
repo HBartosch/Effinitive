@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>2.8.0</Version>
+    <Version>2.8.1</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,7 +19,9 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v2.8.0: Certificate rotation without a restart, and a clean TLS close. TlsOptions.ReloadOnChange watches the certificate and key files and resolves the certificate per handshake through ServerCertificateSelectionCallback instead of binding it once at startup, so a renewal on disk takes effect on the next handshake while connections already established keep the certificate they negotiated with. The files are polled rather than watched, because renewal tools install a pair by renaming over the old one and a rename into a bind-mounted directory is the case inotify reports unreliably. A half-written pair simply fails to load and is retried. Separately, connections now send a close_notify alert before closing the socket (RFC 8446 6.1): without it a client cannot tell a complete response from a truncated one.
+    <PackageReleaseNotes>v2.8.1: WebSocket replies are no longer held back by a partly-arrived frame. The connection defers its flush while another frame is already buffered, so a run of replies costs one write instead of one each, but the test was whether any bytes remained rather than whether a whole frame had. RFC 6455 5.2 gives every frame an explicit length, so bytes short of that length offer nothing to process: a complete frame trailed by one byte of the next one caused the reply to the first to wait on the remainder of the second, which a client waiting for that reply before sending more never sends. The batching behaviour is unchanged when a whole frame really is queued.
+
+v2.8.0: Certificate rotation without a restart, and a clean TLS close. TlsOptions.ReloadOnChange watches the certificate and key files and resolves the certificate per handshake through ServerCertificateSelectionCallback instead of binding it once at startup, so a renewal on disk takes effect on the next handshake while connections already established keep the certificate they negotiated with. The files are polled rather than watched, because renewal tools install a pair by renaming over the old one and a rename into a bind-mounted directory is the case inotify reports unreliably. A half-written pair simply fails to load and is retried. Separately, connections now send a close_notify alert before closing the socket (RFC 8446 6.1): without it a client cannot tell a complete response from a truncated one.
 
 v2.7.0: Cleartext HTTP/2. A listener created with UseHttp2Cleartext serves HTTP/2 with prior knowledge (RFC 9113 3.3): the client sends the connection preface immediately and the port itself is the agreement, so nothing is negotiated and no certificate is needed. The preface is read and validated as on the TLS path, so a client that opens such a port and speaks HTTP/1.1 is rejected rather than quietly served. This is a property of the listener rather than of the request, so an h2c port is separate from the HTTP/1.1 one.
 

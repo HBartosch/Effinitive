@@ -35,9 +35,9 @@ public class ListenerBindingTests
         using var cert = SelfSigned();
         var binding = ListenerBinding.Secure(8081, cert, [SslApplicationProtocol.Http11]);
 
-        // The h1-only listener must not offer h2: a client that also speaks h2
-        // would otherwise be upgraded, and the profile measuring HTTP/1.1 would
-        // silently be measuring HTTP/2 instead.
+        // RFC 7301 §3.2: the server selects from the client's list, so what the
+        // server advertises decides the protocol. A listener meant for HTTP/1.1
+        // that also offers h2 will serve h2 to any client that speaks it.
         Assert.Equal([SslApplicationProtocol.Http11], binding.SslOptions!.ApplicationProtocols);
     }
 
