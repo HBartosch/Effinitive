@@ -65,6 +65,13 @@ public sealed class ServerOptions
     public int HttpsPort { get; set; } = 0;
 
     /// <summary>
+    /// Extra sockets to accept on, each with its own certificate and ALPN list.
+    /// Empty by default, leaving <see cref="HttpPort"/> and <see cref="HttpsPort"/>
+    /// as the only listeners.
+    /// </summary>
+    public IList<ListenerOptions> Listeners { get; } = new List<ListenerOptions>();
+
+    /// <summary>
     /// Maximum concurrent connections (default: CPU count * 100)
     /// </summary>
     public int MaxConcurrentConnections { get; set; } = Environment.ProcessorCount * 100;

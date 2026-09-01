@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-01
+
+### Added
+- **Multiple listeners** — `AddListener()` adds a socket beyond `UsePort()` and `UseHttpsPort()`, each
+  carrying its own certificate and its own ALPN list. One server can now advertise HTTP/2 and HTTP/1.1
+  on one port while advertising HTTP/1.1 alone on another, or serve two ports from different
+  certificate files. A client offering several protocols takes the server's first match, so the ALPN
+  list is what decides the protocol a listener actually serves, which is why it belongs to the listener
+  rather than to the server.
+
+### Changed
+- **TLS options are built per listener at startup** — previously one `SslServerAuthenticationOptions`
+  was cached in a static field keyed on the certificate and built lazily under a lock. That was correct
+  only while a single TLS listener existed: two listeners sharing a certificate but advertising
+  different protocol lists would each invalidate the other's cache entry, and a connection could be
+  authenticated against whichever list happened to be cached at the time. Each listener now owns its
+  own instance, which removes the cache, the lock and that race together.
+
 ## [2.5.1] - 2026-09-01
 
 ### Fixed

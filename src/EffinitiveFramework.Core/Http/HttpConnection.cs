@@ -28,9 +28,8 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
     // High-performance transport (plaintext only)
     private SocketTransportConnection? _transport;
     
-    // Cached TLS options — shared across all connections to avoid per-connection allocation
-    private static SslServerAuthenticationOptions? _cachedSslOptions;
-    private static readonly object _sslOptionsLock = new();
+    // TLS options are built once per listener (see ListenerBinding) and passed
+    // in, so there is nothing to cache or lock here.
 
     public bool IsConnected => _socket?.Connected ?? false;
     public DateTime LastActivity { get; private set; }
@@ -74,15 +73,25 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
         bool isSecure,
         X509Certificate2? certificate,
         CancellationToken cancellationToken)
-        => InitializeAsync(socket, isSecure, certificate, cancellationToken, null, null);
+        => InitializeAsync(
+            socket,
+            isSecure,
+            certificate == null ? null : ListenerBinding.BuildSslOptions(certificate, null),
+            cancellationToken,
+            null,
+            null);
 
     /// <summary>
     /// Initialize connection with a socket using the high-performance transport.
     /// </summary>
+    /// <param name="sslOptions">
+    /// The accepting listener's TLS configuration, built once at startup. Null on
+    /// a plaintext listener.
+    /// </param>
     internal async Task InitializeAsync(
         Socket socket,
         bool isSecure,
-        X509Certificate2? certificate,
+        SslServerAuthenticationOptions? sslOptions,
         CancellationToken cancellationToken,
         PipeScheduler? ioScheduler,
         SocketSenderPool? senderPool)
@@ -102,33 +111,12 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
             RemoteIpAddressText = RemoteIpAddress.ToString();
         }
 
-        if (isSecure && certificate != null)
+        if (isSecure && sslOptions != null)
         {
             // TLS connections go through SslStream — can't use direct socket transport
             var networkStream = new NetworkStream(_socket, ownsSocket: false);
             var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
-            
-            // Reuse cached SslServerAuthenticationOptions to avoid per-connection allocation
-            var sslOptions = _cachedSslOptions;
-            if (sslOptions == null || sslOptions.ServerCertificate != certificate)
-            {
-                lock (_sslOptionsLock)
-                {
-                    if (_cachedSslOptions == null || _cachedSslOptions.ServerCertificate != certificate)
-                    {
-                        _cachedSslOptions = new SslServerAuthenticationOptions
-                        {
-                            ServerCertificate = certificate,
-                            ClientCertificateRequired = false,
-                            EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
-                            ApplicationProtocols = [SslApplicationProtocol.Http2, SslApplicationProtocol.Http11],
-                            AllowTlsResume = true,
-                        };
-                    }
-                    sslOptions = _cachedSslOptions;
-                }
-            }
-            
+
             await sslStream.AuthenticateAsServerAsync(sslOptions, cancellationToken);
             
             NegotiatedProtocol = sslStream.NegotiatedApplicationProtocol.Protocol.Length > 0

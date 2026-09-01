@@ -52,6 +52,12 @@ public sealed partial class EffinitiveServer : IDisposable
     private Socket? _httpsListener;
     private Task? _httpAcceptTask;
     private Task? _httpsAcceptTask;
+
+    // Sockets from ServerOptions.Listeners. Held separately from the two
+    // built-in ports so the existing startup and shutdown paths keep their
+    // shape; everything here is additive.
+    private readonly List<Socket> _extraListeners = [];
+    private readonly List<Task> _extraAcceptTasks = [];
 #if NET10_0_OR_GREATER
     private Task? _http3AcceptTask;
 #endif
@@ -125,14 +131,18 @@ public sealed partial class EffinitiveServer : IDisposable
         if (_options.HttpPort > 0)
         {
             _httpListener = CreateListener(_options.HttpPort);
-            _httpAcceptTask = AcceptConnectionsAsync(_httpListener, isSecure: false, _shutdownCts.Token);
+            _httpAcceptTask = AcceptConnectionsAsync(
+                _httpListener, ListenerBinding.Plaintext(_options.HttpPort, "http"), _shutdownCts.Token);
         }
 
         // Start HTTPS listener
         if (_options.HttpsPort > 0 && _options.TlsOptions.Certificate != null)
         {
             _httpsListener = CreateListener(_options.HttpsPort);
-            _httpsAcceptTask = AcceptConnectionsAsync(_httpsListener, isSecure: true, _shutdownCts.Token);
+            _httpsAcceptTask = AcceptConnectionsAsync(
+                _httpsListener,
+                ListenerBinding.Secure(_options.HttpsPort, _options.TlsOptions.Certificate, null, "https"),
+                _shutdownCts.Token);
 
 #if NET10_0_OR_GREATER
             // Start HTTP/3 listener (QUIC) on the same HTTPS port if supported
@@ -146,6 +156,43 @@ public sealed partial class EffinitiveServer : IDisposable
                 Console.WriteLine("  HTTP/3 not available (QuicListener.IsSupported=false)");
             }
 #endif
+        }
+
+        // Additional listeners. Each resolves its own certificate, so two of
+        // them can serve different files, and each builds its own ALPN list.
+        foreach (var listener in _options.Listeners)
+        {
+            if (listener.Port <= 0)
+                continue;
+
+            ListenerBinding binding;
+            if (listener.UseTls)
+            {
+                listener.Tls.LoadCertificate();
+                if (listener.Tls.Certificate == null)
+                {
+                    Console.WriteLine(
+                        $"  listener '{listener.Name ?? listener.Port.ToString()}' on {listener.Port} skipped: TLS requested but no certificate resolved");
+                    continue;
+                }
+                binding = ListenerBinding.Secure(
+                    listener.Port, listener.Tls.Certificate, listener.AlpnProtocols,
+                    listener.Name ?? listener.Port.ToString());
+            }
+            else
+            {
+                binding = ListenerBinding.Plaintext(listener.Port, listener.Name ?? listener.Port.ToString());
+            }
+
+            var socket = CreateListener(listener.Port);
+            _extraListeners.Add(socket);
+            _extraAcceptTasks.Add(AcceptConnectionsAsync(socket, binding, _shutdownCts.Token));
+
+            var scheme = listener.UseTls ? "https" : "http";
+            var alpn = listener.UseTls
+                ? " [" + string.Join(", ", binding.SslOptions!.ApplicationProtocols!.Select(p => p.ToString())) + "]"
+                : string.Empty;
+            Console.WriteLine($"  {scheme}://localhost:{listener.Port}{alpn}");
         }
 
         await Task.CompletedTask;
@@ -164,15 +211,19 @@ public sealed partial class EffinitiveServer : IDisposable
         // Stop accepting new connections
         _httpListener?.Close();
         _httpsListener?.Close();
+        foreach (var listener in _extraListeners)
+            listener.Close();
 
         // Wait for active connections to complete (with timeout)
         var shutdownTask = Task.WhenAll(
-            _httpAcceptTask ?? Task.CompletedTask,
-            _httpsAcceptTask ?? Task.CompletedTask
+            [
+                _httpAcceptTask ?? Task.CompletedTask,
+                _httpsAcceptTask ?? Task.CompletedTask,
 #if NET10_0_OR_GREATER
-            , _http3AcceptTask ?? Task.CompletedTask
+                _http3AcceptTask ?? Task.CompletedTask,
 #endif
-            );
+                .. _extraAcceptTasks,
+            ]);
 
         await Task.WhenAny(shutdownTask, Task.Delay(timeout.Value));
     }
@@ -199,7 +250,7 @@ public sealed partial class EffinitiveServer : IDisposable
         // connections, so it avoids both the throughput cliff and a flat per-connection memory cost.
     }
 
-    private async Task AcceptConnectionsAsync(Socket listener, bool isSecure, CancellationToken cancellationToken)
+    private async Task AcceptConnectionsAsync(Socket listener, ListenerBinding binding, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -219,7 +270,7 @@ public sealed partial class EffinitiveServer : IDisposable
                 var senderPool = _senderPools[queueIdx];
 
                 Interlocked.Increment(ref _activeConnections);
-                _ = HandleConnectionAsync(socket, isSecure, cancellationToken, ioQueue, senderPool);
+                _ = HandleConnectionAsync(socket, binding, cancellationToken, ioQueue, senderPool);
             }
             catch (OperationCanceledException)
             {
@@ -234,7 +285,7 @@ public sealed partial class EffinitiveServer : IDisposable
             }
         }
         if (!_isProduction)
-            Console.WriteLine($"Accept loop exited - secure: {isSecure}");
+            Console.WriteLine($"Accept loop exited - port: {binding.Port}, secure: {binding.IsSecure}");
     }
 
     public void Dispose()
@@ -242,6 +293,8 @@ public sealed partial class EffinitiveServer : IDisposable
         _shutdownCts.Cancel();
         _httpListener?.Dispose();
         _httpsListener?.Dispose();
+        foreach (var listener in _extraListeners)
+            listener.Dispose();
         _connectionLimit.Dispose();
         _shutdownCts.Dispose();
         foreach (var pool in _senderPools)

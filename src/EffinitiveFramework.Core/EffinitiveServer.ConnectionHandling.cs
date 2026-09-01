@@ -9,7 +9,7 @@ namespace EffinitiveFramework.Core;
 public sealed partial class EffinitiveServer
 {
     private async Task HandleConnectionAsync(
-        Socket socket, bool isSecure, CancellationToken cancellationToken,
+        Socket socket, ListenerBinding binding, CancellationToken cancellationToken,
         IOQueue ioQueue, SocketSenderPool senderPool)
     {
         var connection = _connectionPool.Get();
@@ -23,8 +23,8 @@ public sealed partial class EffinitiveServer
         {
             await connection.InitializeAsync(
                 socket,
-                isSecure,
-                _options.TlsOptions.Certificate,
+                binding.IsSecure,
+                binding.SslOptions,
                 cancellationToken,
                 ioQueue,
                 senderPool);
