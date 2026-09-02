@@ -297,7 +297,10 @@ public sealed partial class EffinitiveServer
         {
             StatusCode = 101,
             KeepAlive = false,
-            ContentType = null
+            // Empty rather than null: the property is non-nullable, and the
+            // writer treats empty and null identically, so this changes nothing
+            // on the wire.
+            ContentType = string.Empty
         };
         response.Headers[HeaderNames.Upgrade] = HeaderValues.Websocket;
         response.Headers[HeaderNames.Connection] = HeaderNames.Upgrade;

@@ -68,8 +68,15 @@ public sealed class TlsOptions
             }
             else
             {
-                // PFX file
+                // PFX file. The path-taking X509Certificate2 constructor is
+                // obsolete from .NET 9 (SYSLIB0057) in favour of
+                // X509CertificateLoader, which does not exist on .NET 8, so the
+                // two targets take different routes to the same result.
+#if NET9_0_OR_GREATER
+                Certificate = X509CertificateLoader.LoadPkcs12FromFile(CertificatePath, CertificatePassword);
+#else
                 Certificate = new X509Certificate2(CertificatePath, CertificatePassword);
+#endif
             }
         }
     }

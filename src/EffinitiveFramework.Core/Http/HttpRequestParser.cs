@@ -17,7 +17,6 @@ public static class HttpRequestParser
     private static readonly byte Cr = (byte)'\r';
     private static readonly byte Lf = (byte)'\n';
     private static readonly byte Colon = (byte)':';
-    private static readonly byte Semicolon = (byte)';';
 
     // RFC limits
     private const int MaxMethodLength = 64;

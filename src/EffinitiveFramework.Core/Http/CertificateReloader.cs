@@ -92,7 +92,7 @@ internal sealed class CertificateReloader : IDisposable
                 return null;
 
             return string.IsNullOrEmpty(_options.KeyPath)
-                ? new X509Certificate2(_options.CertificatePath, _options.CertificatePassword)
+                ? LoadPkcs12(_options.CertificatePath, _options.CertificatePassword)
                 : X509Certificate2.CreateFromPemFile(_options.CertificatePath, _options.KeyPath);
         }
         catch
@@ -100,6 +100,21 @@ internal sealed class CertificateReloader : IDisposable
             // Half-written pair, or a file briefly absent during a rename.
             return null;
         }
+    }
+
+    /// <summary>
+    /// Load a PFX from disk. The <see cref="X509Certificate2"/> constructor that
+    /// takes a path is obsolete from .NET 9 (SYSLIB0057) in favour of
+    /// <c>X509CertificateLoader</c>, which does not exist on .NET 8, so the two
+    /// targets take different routes to the same result.
+    /// </summary>
+    private static X509Certificate2 LoadPkcs12(string path, string? password)
+    {
+#if NET9_0_OR_GREATER
+        return X509CertificateLoader.LoadPkcs12FromFile(path, password);
+#else
+        return new X509Certificate2(path, password);
+#endif
     }
 
     private static (long, DateTime) Stamp(string? path)

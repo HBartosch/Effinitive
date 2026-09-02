@@ -18,6 +18,9 @@ public sealed class WebSocketConnection : IAsyncDisposable
     private readonly PipeReader _reader;
     private readonly PipeWriter _writer;
     private readonly ArrayBufferWriter<byte> _messageBuffer;
+    // RFC 6455 §5.5: control frames carry at most 125 bytes, so this is sized
+    // by the specification and never needs to grow.
+    private readonly byte[] _controlScratch = new byte[125];
     private bool _closeSent;
     private bool _closeReceived;
     // Set by ReceiveAsync when more frames remain in the pipe buffer after returning a message.
@@ -85,7 +88,12 @@ public sealed class WebSocketConnection : IAsyncDisposable
                         await SendCloseAsync(1002, "protocol error", cancellationToken);
                         return null;
                     }
-                    Span<byte> ctrlPayload = stackalloc byte[header.PayloadLength];
+                    // Reused per connection rather than stack-allocated per
+                    // frame: one read can carry many control frames, and a
+                    // stackalloc inside the loop grows the frame by up to 125
+                    // bytes for each of them (CA2014). The length is bounded by
+                    // the check above, so the slice is always in range.
+                    var ctrlPayload = _controlScratch.AsSpan(0, header.PayloadLength);
                     payloadSeq.CopyTo(ctrlPayload);
                     if (header.Masked) WebSocketFrame.ApplyMask(ctrlPayload, header.MaskKey);
 
