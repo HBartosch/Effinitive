@@ -7,65 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.8.1] - 2026-09-01
-
-### Fixed
-- **A partly-arrived WebSocket frame no longer holds back the previous reply** — the connection defers
-  its flush while another frame is already buffered, so a run of replies costs one write rather than one
-  each. The test for "already buffered" was whether any bytes remained, not whether a whole frame had
-  arrived. RFC 6455 §5.2 gives every frame an explicit length, so bytes short of that length offer
-  nothing to process: a complete frame trailed by a single byte of the next one caused the reply to the
-  first to wait on the remainder of the second. A client that waits for that reply before sending
-  anything more never sends the remainder, so the exchange stalled until one side timed out.
-- The batching itself is unchanged when a whole frame really is queued. Measured over a held connection,
-  replies per second at batch depths of 1, 2, 4, 8, 16 and 32 are within noise of the previous build,
-  while a frame followed by a partial frame is now answered in under a millisecond instead of never.
-
-## [2.8.0] - 2026-09-01
-
-### Added
-- **Certificate rotation without a restart** — `TlsOptions.ReloadOnChange` watches the certificate and
-  key files and resolves the certificate per handshake through `ServerCertificateSelectionCallback`
-  rather than binding it once into `ServerCertificate`. A renewal on disk takes effect on the next
-  handshake; connections already established keep the certificate they negotiated with, since TLS
-  authenticates the peer once and there is nothing to re-present mid-connection.
-- The files are polled on an interval (`ReloadPollInterval`, one second by default) rather than watched
-  with `FileSystemWatcher`. Renewal tools install a new pair by writing a temporary file and renaming it
-  over the old one, and a rename into a bind-mounted directory is exactly the case inotify reports
-  unreliably across container filesystems. A pair caught half-written simply fails to load and is
-  retried on the next tick rather than being treated as a rotation.
-
-### Fixed
-- **`close_notify` on connection close** — TLS connections now send a `close_notify` alert before
-  closing the socket, per RFC 8446 §6.1. `SslStream.DisposeAsync()` does not send one on its own, so a
-  client had no way to distinguish a complete response from a truncated one. Best effort: the peer may
-  already be gone, and failing to say goodbye is not a reason to fail the teardown.
-
-## [2.7.0] - 2026-09-01
-
-### Added
-- **Cleartext HTTP/2 (h2c)** — a listener created with `UseHttp2Cleartext` serves HTTP/2 with prior
-  knowledge (RFC 9113 §3.3). The client sends the connection preface immediately, so nothing is
-  negotiated and no certificate is involved. The preface is read and validated exactly as on the TLS
-  path, so a client that opens such a port and speaks HTTP/1.1 is rejected there rather than quietly
-  served over the wrong protocol.
-- This is a property of the listener rather than of the request, because prior knowledge means the
-  client does not ask. An h2c port therefore does not also serve HTTP/1.1 and needs a port of its own.
-
-### Fixed
-- `HandleHttp2ConnectionAsync` now takes its stream from `GetOrCreateStream()` rather than the `Stream`
-  property. The TLS path is unchanged, but a cleartext connection has no `Stream`: it runs on the
-  socket transport's pipes, which `GetOrCreateStream()` wraps.
-
 ## [2.6.0] - 2026-09-01
 
 ### Added
 - **Multiple listeners** — `AddListener()` adds a socket beyond `UsePort()` and `UseHttpsPort()`, each
   carrying its own certificate and its own ALPN list. One server can now advertise HTTP/2 and HTTP/1.1
   on one port while advertising HTTP/1.1 alone on another, or serve two ports from different
-  certificate files. A client offering several protocols takes the server's first match, so the ALPN
-  list is what decides the protocol a listener actually serves, which is why it belongs to the listener
-  rather than to the server.
+  certificate files. Per RFC 7301 §3.2 the server selects from the protocols the client advertised and
+  its own preference governs, so the ALPN list is what decides the protocol a listener actually serves.
+  That is why it belongs to the listener rather than to the server.
+- **Cleartext HTTP/2 (h2c)** — a listener created with `UseHttp2Cleartext` serves HTTP/2 with prior
+  knowledge (RFC 9113 §3.3), where the client "can establish a TCP connection and send the connection
+  preface followed by HTTP/2 frames". Nothing is negotiated and no certificate is involved. The §3.4
+  preface is read and validated exactly as on the TLS path, so a client that opens such a port and
+  speaks HTTP/1.1 is rejected there rather than quietly served over the wrong protocol. This too is a
+  property of the listener, because prior knowledge means the client does not ask; an h2c port
+  therefore does not also serve HTTP/1.1 and needs a port of its own.
+- **Certificate rotation without a restart** — `TlsOptions.ReloadOnChange` watches the certificate and
+  key files and resolves the certificate per handshake through `ServerCertificateSelectionCallback`
+  rather than binding it once into `ServerCertificate`. A renewal on disk takes effect on the next
+  handshake; connections already established keep the certificate they negotiated with, since TLS
+  authenticates the peer once and there is nothing to re-present mid-connection.
+- The certificate files are polled on an interval (`ReloadPollInterval`, one second by default) rather
+  than watched with `FileSystemWatcher`. Renewal tools install a new pair by writing a temporary file
+  and renaming it over the old one, and a rename into a bind-mounted directory is exactly the case
+  inotify reports unreliably across container filesystems. A pair caught half-written simply fails to
+  load and is retried on the next tick rather than being treated as a rotation.
 
 ### Changed
 - **TLS options are built per listener at startup** — previously one `SslServerAuthenticationOptions`
@@ -74,8 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different protocol lists would each invalidate the other's cache entry, and a connection could be
   authenticated against whichever list happened to be cached at the time. Each listener now owns its
   own instance, which removes the cache, the lock and that race together.
-
-## [2.5.1] - 2026-09-01
 
 ### Fixed
 - **Header CRLF split across TCP reads** — a request whose header line was cut between the CR and the
@@ -88,9 +53,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the header path now matches it. A client whose request arrived in more than one segment saw a spurious
   400 at one offset per header line, so the failure rate scaled with header count rather than being a
   fixed edge case.
+- **A partly-arrived WebSocket frame no longer holds back the previous reply** — the connection defers
+  its flush while another frame is already buffered, so a run of replies costs one write rather than one
+  each. The test for "already buffered" was whether any bytes remained, not whether a whole frame had
+  arrived. RFC 6455 §5.2 gives every frame an explicit length, so bytes short of that length offer
+  nothing to process: a complete frame trailed by a single byte of the next one caused the reply to the
+  first to wait on the remainder of the second. A client that waits for that reply before sending
+  anything more never sends the remainder, so the exchange stalled until one side timed out. The
+  batching itself is unchanged when a whole frame really is queued: measured over a held connection,
+  replies per second at batch depths of 1 through 32 are within noise of the previous build, while a
+  frame followed by a partial frame is now answered in under a millisecond instead of never.
+- **`close_notify` on connection close** — TLS connections now send a `close_notify` alert before
+  closing the socket. RFC 8446 §6.1 requires a party to send one "before closing the write side of the
+  connection", and `SslStream.DisposeAsync()` does not, so a client had no way to distinguish a complete
+  response from a truncated one. Best effort: the peer may already be gone, and failing to say goodbye
+  is not a reason to fail the teardown.
+- `HandleHttp2ConnectionAsync` now takes its stream from `GetOrCreateStream()` rather than the `Stream`
+  property. The TLS path is unchanged, but a cleartext connection has no `Stream`: it runs on the
+  socket transport's pipes, which `GetOrCreateStream()` wraps.
 - **Regression cover** — `HttpRequestParserFragmentationTests` splits each of the three request body
   framings at every byte offset and asserts that no prefix throws and that every two-segment split still
-  parses.
+  parses. `ListenerBindingTests` pins that two listeners sharing a certificate keep separate protocol
+  lists, `CertificateReloaderTests` covers the swap and the half-written pair, and `WebSocketFlushTests`
+  covers the partial-frame case alongside the batching it must not cost.
 
 ## [2.5.0] - 2026-07-29
 
