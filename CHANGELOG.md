@@ -66,8 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`close_notify` on connection close** — TLS connections now send a `close_notify` alert before
   closing the socket. RFC 8446 §6.1 requires a party to send one "before closing the write side of the
   connection", and `SslStream.DisposeAsync()` does not, so a client had no way to distinguish a complete
-  response from a truncated one. Best effort: the peer may already be gone, and failing to say goodbye
-  is not a reason to fail the teardown.
+  response from a truncated one. It matters most on HTTP/1.1, where a response delimited by connection
+  close has no other end marker.
+- The alert is sent before the request pipes are completed. On the TLS HTTP/1.1 path both are created
+  over the `SslStream` with `leaveOpen: false`, so completing either disposes it; sending afterwards
+  raises `ObjectDisposedException` and puts nothing on the wire. The send is bounded by a two-second
+  timeout, because `SslStream.ShutdownAsync()` writes a record and accepts no `CancellationToken`, so a
+  peer that has stopped reading would otherwise hold the connection and its slot in the active count
+  open indefinitely. Beyond that it stays best effort: the peer may already be gone, and failing to say
+  goodbye is not a reason to fail the teardown.
 - `HandleHttp2ConnectionAsync` now takes its stream from `GetOrCreateStream()` rather than the `Stream`
   property. The TLS path is unchanged, but a cleartext connection has no `Stream`: it runs on the
   socket transport's pipes, which `GetOrCreateStream()` wraps.
