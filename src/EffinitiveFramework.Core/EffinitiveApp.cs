@@ -147,6 +147,32 @@ public sealed class EffinitiveAppBuilder
     }
 
     /// <summary>
+    /// Add a listener beyond <see cref="UsePort"/> and <see cref="UseHttpsPort"/>,
+    /// with its own certificate and its own ALPN list.
+    /// </summary>
+    /// <example>
+    /// An HTTP/1.1-only TLS listener, for a port that must not be upgraded to HTTP/2:
+    /// <code>
+    /// .AddListener(l =>
+    /// {
+    ///     l.Port = 8081;
+    ///     l.UseTls = true;
+    ///     l.Tls.CertificatePath = "/certs/server.crt";
+    ///     l.Tls.KeyPath = "/certs/server.key";
+    ///     l.AlpnProtocols = [SslApplicationProtocol.Http11];
+    /// })
+    /// </code>
+    /// </example>
+    public EffinitiveAppBuilder AddListener(Action<ListenerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var listener = new ListenerOptions();
+        configure(listener);
+        _serverOptions.Listeners.Add(listener);
+        return this;
+    }
+
+    /// <summary>
     /// Set maximum concurrent connections
     /// </summary>
     public EffinitiveAppBuilder UseMaxConnections(int maxConnections)

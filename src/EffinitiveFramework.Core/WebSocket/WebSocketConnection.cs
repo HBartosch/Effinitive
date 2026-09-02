@@ -18,6 +18,9 @@ public sealed class WebSocketConnection : IAsyncDisposable
     private readonly PipeReader _reader;
     private readonly PipeWriter _writer;
     private readonly ArrayBufferWriter<byte> _messageBuffer;
+    // RFC 6455 §5.5: control frames carry at most 125 bytes, so this is sized
+    // by the specification and never needs to grow.
+    private readonly byte[] _controlScratch = new byte[125];
     private bool _closeSent;
     private bool _closeReceived;
     // Set by ReceiveAsync when more frames remain in the pipe buffer after returning a message.
@@ -85,7 +88,12 @@ public sealed class WebSocketConnection : IAsyncDisposable
                         await SendCloseAsync(1002, "protocol error", cancellationToken);
                         return null;
                     }
-                    Span<byte> ctrlPayload = stackalloc byte[header.PayloadLength];
+                    // Reused per connection rather than stack-allocated per
+                    // frame: one read can carry many control frames, and a
+                    // stackalloc inside the loop grows the frame by up to 125
+                    // bytes for each of them (CA2014). The length is bounded by
+                    // the check above, so the slice is always in range.
+                    var ctrlPayload = _controlScratch.AsSpan(0, header.PayloadLength);
                     payloadSeq.CopyTo(ctrlPayload);
                     if (header.Masked) WebSocketFrame.ApplyMask(ctrlPayload, header.MaskKey);
 
@@ -117,8 +125,19 @@ public sealed class WebSocketConnection : IAsyncDisposable
 
                 if (header.Fin)
                 {
-                    // Track whether more frames are already buffered so SendAsync can defer its flush.
-                    _hasPendingData = buffer.Length > 0;
+                    // Defer the flush only when another WHOLE frame is already
+                    // buffered, so the response about to be written is certain
+                    // to be followed by another without waiting on the network.
+                    //
+                    // "Any bytes remain" is not the same test. RFC 6455 §5.2
+                    // frames carry a length, so a frame is only actionable once
+                    // that many payload bytes have arrived; a complete frame
+                    // trailed by one byte of the next satisfies "bytes remain"
+                    // while offering nothing to process. Deferring on that holds
+                    // an answer the client has already earned until the rest of
+                    // an unrelated frame arrives, which a client waiting on that
+                    // answer before sending more never sends.
+                    _hasPendingData = HasCompleteFrame(buffer);
                     gotMessage = true;
                     break;
                 }
@@ -186,6 +205,14 @@ public sealed class WebSocketConnection : IAsyncDisposable
         await _reader.CompleteAsync();
         await _writer.CompleteAsync();
     }
+
+    /// <summary>
+    /// Whether <paramref name="buffer"/> already holds a frame in full: a
+    /// parseable header and the whole payload it declares.
+    /// </summary>
+    private static bool HasCompleteFrame(ReadOnlySequence<byte> buffer)
+        => WebSocketFrame.TryParseHeader(buffer, out var header, out var headerConsumed)
+           && buffer.Slice(headerConsumed).Length >= header.PayloadLength;
 
     /// <summary>
     /// Write a WebSocket frame header directly to the PipeWriter. No intermediate buffer.

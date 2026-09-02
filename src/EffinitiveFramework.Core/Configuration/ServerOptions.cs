@@ -29,6 +29,32 @@ public sealed class TlsOptions
     public string? CertificatePassword { get; set; }
 
     /// <summary>
+    /// Watch <see cref="CertificatePath"/> and <see cref="KeyPath"/> and pick up a
+    /// replacement without a restart. New handshakes use the new certificate;
+    /// connections already established keep the one they negotiated with.
+    /// </summary>
+    /// <remarks>
+    /// Off by default, because it costs a periodic stat of two files and most
+    /// servers are restarted on renewal anyway. Turn it on where a certificate
+    /// is renewed underneath a long-running process, which for a 90-day
+    /// certificate is every deployment-free month or two.
+    /// </remarks>
+    public bool ReloadOnChange { get; set; }
+
+    /// <summary>
+    /// How often the certificate files are checked when <see cref="ReloadOnChange"/>
+    /// is set. Default is one second.
+    /// </summary>
+    /// <remarks>
+    /// Polled rather than watched with <c>FileSystemWatcher</c> on purpose.
+    /// Renewal tools install a new pair by writing a temporary file and renaming
+    /// it over the old one, and a rename into a bind-mounted directory is
+    /// exactly the case inotify reports unreliably across container filesystems.
+    /// Two stat calls a second is a rounding error against missing a rotation.
+    /// </remarks>
+    public TimeSpan ReloadPollInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// Load certificate from path if configured
     /// </summary>
     public void LoadCertificate()
@@ -42,8 +68,15 @@ public sealed class TlsOptions
             }
             else
             {
-                // PFX file
+                // PFX file. The path-taking X509Certificate2 constructor is
+                // obsolete from .NET 9 (SYSLIB0057) in favour of
+                // X509CertificateLoader, which does not exist on .NET 8, so the
+                // two targets take different routes to the same result.
+#if NET9_0_OR_GREATER
+                Certificate = X509CertificateLoader.LoadPkcs12FromFile(CertificatePath, CertificatePassword);
+#else
                 Certificate = new X509Certificate2(CertificatePath, CertificatePassword);
+#endif
             }
         }
     }
@@ -63,6 +96,13 @@ public sealed class ServerOptions
     /// HTTPS port (default: 5001), 0 to disable
     /// </summary>
     public int HttpsPort { get; set; } = 0;
+
+    /// <summary>
+    /// Extra sockets to accept on, each with its own certificate and ALPN list.
+    /// Empty by default, leaving <see cref="HttpPort"/> and <see cref="HttpsPort"/>
+    /// as the only listeners.
+    /// </summary>
+    public IList<ListenerOptions> Listeners { get; } = new List<ListenerOptions>();
 
     /// <summary>
     /// Maximum concurrent connections (default: CPU count * 100)

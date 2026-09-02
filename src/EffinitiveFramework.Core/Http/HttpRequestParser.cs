@@ -17,7 +17,6 @@ public static class HttpRequestParser
     private static readonly byte Cr = (byte)'\r';
     private static readonly byte Lf = (byte)'\n';
     private static readonly byte Colon = (byte)':';
-    private static readonly byte Semicolon = (byte)';';
 
     // RFC limits
     private const int MaxMethodLength = 64;
@@ -379,8 +378,14 @@ public static class HttpRequestParser
             if (!reader.TryReadTo(out ReadOnlySpan<byte> headerLineBytes, Cr))
                 return false;
 
-            // Must be followed by LF
-            if (!reader.TryRead(out byte lf) || lf != Lf)
+            // Must be followed by LF. A buffer that runs out on the CR is a read
+            // that split the CRLF, not a malformed line: RFC 9112 §2.2 delimits
+            // header fields by the syntax itself, running until the empty line,
+            // and RFC 9110 §15.5.1 reserves 400 for a client error, which where
+            // a read ended is not. Ask for more data rather than reject.
+            if (!reader.TryRead(out byte lf))
+                return false;
+            if (lf != Lf)
                 throw HttpParseException.BadRequest("Invalid header line ending (expected CRLF)");
 
             totalHeaderBytes += headerLineBytes.Length + 2; // +2 for CRLF

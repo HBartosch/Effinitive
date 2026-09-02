@@ -9,7 +9,7 @@ namespace EffinitiveFramework.Core;
 public sealed partial class EffinitiveServer
 {
     private async Task HandleConnectionAsync(
-        Socket socket, bool isSecure, CancellationToken cancellationToken,
+        Socket socket, ListenerBinding binding, CancellationToken cancellationToken,
         IOQueue ioQueue, SocketSenderPool senderPool)
     {
         var connection = _connectionPool.Get();
@@ -23,11 +23,23 @@ public sealed partial class EffinitiveServer
         {
             await connection.InitializeAsync(
                 socket,
-                isSecure,
-                _options.TlsOptions.Certificate,
+                binding.IsSecure,
+                binding.SslOptions,
                 cancellationToken,
                 ioQueue,
                 senderPool);
+
+            // Cleartext HTTP/2 with prior knowledge (RFC 9113 §3.3): the client
+            // "can establish a TCP connection and send the connection preface
+            // followed by HTTP/2 frames", so nothing is negotiated and the port
+            // itself is the agreement. Http2Connection validates the §3.4
+            // preface, so a client that opens this port and speaks HTTP/1.1 is
+            // rejected there rather than being quietly served.
+            if (binding.IsHttp2Cleartext)
+            {
+                await HandleHttp2ConnectionAsync(connection, cancellationToken);
+                return;
+            }
 
             // Check if HTTP/2 was negotiated
             if (connection.NegotiatedProtocol == "h2")

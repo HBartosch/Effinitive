@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
@@ -11,7 +11,7 @@
     <Title>EffinitiveFramework.Core</Title>
     <Authors>Henry Bartosch</Authors>
     <PackageId>EffinitiveFramework.Core</PackageId>
-    <Version>2.5.0</Version>
+    <Version>2.6.0</Version>
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
@@ -19,7 +19,9 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v2.5.0: Rate limiting. UseRateLimiting() applies a token-bucket allowance per client IP across HTTP/1.1, HTTP/2 and HTTP/3, returning 429 Too Many Requests with Retry-After and a ProblemDetails body. Applied before routing, so static files, the OpenAPI document, and floods at nonexistent paths are covered. [RateLimit(PermitLimit, WindowSeconds)] gives an endpoint its own tighter allowance and [DisableRateLimit] exempts one entirely. X-Forwarded-For is honored only from configured trusted proxies, walking the chain right-to-left. Tracked clients are capped so rotating source addresses cannot exhaust memory. Also adds HttpRequest.RemoteIpAddress and 429 to the cached status lines.
+    <PackageReleaseNotes>v2.6.0: Multiple listeners, cleartext HTTP/2, and certificate rotation without a restart. AddListener() adds a socket beyond UsePort() and UseHttpsPort(), each with its own certificate and its own ALPN list, so one server can advertise HTTP/2 and HTTP/1.1 on one port while advertising HTTP/1.1 alone on another. Per RFC 7301 3.2 the server selects from what the client advertised and its own preference governs, so that list decides what a listener serves. UseHttp2Cleartext serves HTTP/2 with prior knowledge (RFC 9113 3.3), validating the 3.4 connection preface as the TLS path does, so a client speaking HTTP/1.1 on such a port is rejected rather than quietly served. TlsOptions.ReloadOnChange resolves the certificate per handshake through ServerCertificateSelectionCallback, so a renewal on disk takes effect on the next handshake while established connections keep the certificate they negotiated with; the files are polled rather than watched, because renewal tools rename a new pair over the old one and inotify reports that unreliably across container filesystems. Fixes: a header line whose CRLF was split across two TCP reads was answered 400 rather than carried, though RFC 9110 15.5.1 reserves 400 for a client error and where a read ended is not one; a WebSocket reply was held back by a partly-arrived following frame, because the write-batching test asked whether bytes remained rather than whether a whole frame had, and RFC 6455 5.2 frames carry an explicit length; and TLS connections now send a close_notify alert before closing, which RFC 8446 6.1 requires and SslStream.DisposeAsync does not do, without which a truncated response is indistinguishable from a complete one. The alert is sent before the request pipes are completed, because on the HTTP/1.1 path those are created over the SslStream with leaveOpen false and completing either disposes it, and it is bounded by a timeout because ShutdownAsync accepts no CancellationToken.
+
+v2.5.0: Rate limiting. UseRateLimiting() applies a token-bucket allowance per client IP across HTTP/1.1, HTTP/2 and HTTP/3, returning 429 Too Many Requests with Retry-After and a ProblemDetails body. Applied before routing, so static files, the OpenAPI document, and floods at nonexistent paths are covered. [RateLimit(PermitLimit, WindowSeconds)] gives an endpoint its own tighter allowance and [DisableRateLimit] exempts one entirely. X-Forwarded-For is honored only from configured trusted proxies, walking the chain right-to-left. Tracked clients are capped so rotating source addresses cannot exhaust memory. Also adds HttpRequest.RemoteIpAddress and 429 to the cached status lines.
 
 v2.4.0: OpenAPI/Swagger integration. UseOpenApi() serves an OpenAPI 3.0.3 document at /openapi/v1.json and Swagger UI at /swagger, generated once at startup from the route table and served from a pre-built buffer, so there is no per-request cost. Routes, path parameter types, request bodies, response schemas, and content types are inferred from existing metadata; [OpenApiOperation], [OpenApiResponse], [OpenApiParameter], and [OpenApiIgnore] add what cannot be. Schema property names follow the server's JsonSerializerOptions and DataAnnotations become schema constraints. Security schemes match the built-in JWT and API-key handlers. Also adds Router.GetRegisteredRoutes() and EndpointInvoker.ResponseType.
 

@@ -219,8 +219,11 @@ public sealed partial class EffinitiveServer
             return response;
         }
 
+        // GetOrCreateStream rather than Stream: on the TLS path this is the
+        // SslStream as before, but a cleartext h2c connection has no Stream at
+        // all — it runs on the socket transport's pipes, which this wraps.
         var http2Connection = new Http2Connection(
-            connection.Stream!,
+            connection.GetOrCreateStream()!,
             RequestHandler,
             remoteIpAddress: connection.RemoteIpAddress);
         
@@ -294,7 +297,10 @@ public sealed partial class EffinitiveServer
         {
             StatusCode = 101,
             KeepAlive = false,
-            ContentType = null
+            // Empty rather than null: the property is non-nullable, and the
+            // writer treats empty and null identically, so this changes nothing
+            // on the wire.
+            ContentType = string.Empty
         };
         response.Headers[HeaderNames.Upgrade] = HeaderValues.Websocket;
         response.Headers[HeaderNames.Connection] = HeaderNames.Upgrade;
