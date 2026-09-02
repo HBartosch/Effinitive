@@ -1,11 +1,15 @@
 #!/usr/bin/env pwsh
 # Quick test of all sample endpoints
 
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 Write-Host "`n=== Testing All Samples ===" -ForegroundColor Cyan
 
 # Test 1: Main Sample
 Write-Host "`n1. Main Sample" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$PWD\samples\EffinitiveFramework.Sample'; dotnet run --configuration Release --no-build"
+Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$RepoRoot\samples\EffinitiveFramework.Sample'; dotnet run --configuration Release --no-build"
 Start-Sleep -Seconds 6
 
 try {
@@ -22,7 +26,7 @@ Start-Sleep -Seconds 3
 
 # Test 2: Validation Sample  
 Write-Host "`n2. Validation Sample" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$PWD\samples\EffinitiveFramework.Validation.Sample'; dotnet run --configuration Release --no-build"
+Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$RepoRoot\samples\EffinitiveFramework.Validation.Sample'; dotnet run --configuration Release --no-build"
 Start-Sleep -Seconds 6
 
 try {
@@ -38,7 +42,7 @@ Start-Sleep -Seconds 3
 
 # Test 3: Auth Sample
 Write-Host "`n3. Auth Sample" -ForegroundColor Yellow  
-Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$PWD\samples\EffinitiveFramework.Auth.Sample'; dotnet run --configuration Release --no-build"
+Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$RepoRoot\samples\EffinitiveFramework.Auth.Sample'; dotnet run --configuration Release --no-build"
 Start-Sleep -Seconds 6
 
 try {
@@ -53,7 +57,7 @@ Start-Sleep -Seconds 3
 
 # Test 4: EFCore Sample
 Write-Host "`n4. EFCore Sample" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$PWD\samples\EffinitiveFramework.EFCore.Sample'; dotnet run --configuration Release --no-build"
+Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$RepoRoot\samples\EffinitiveFramework.EFCore.Sample'; dotnet run --configuration Release --no-build"
 Start-Sleep -Seconds 7
 
 try {

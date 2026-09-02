@@ -15,7 +15,7 @@
     <RepositoryUrl>https://github.com/HBartosch/Effinitive</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HBartosch/Effinitive</PackageProjectUrl>
     <PackageTags>http;http2;web-framework;high-performance;zero-allocation;minimal-api;aspnetcore-alternative;hpack;alpn;tls;https;fast;low-latency;microservices;sse;server-sent-events;streaming</PackageTags>
-    <Description>Ultra-high-performance HTTP/1.1 and HTTP/2 web framework for .NET 8+. Built from scratch for maximum speed with zero-allocation routing, custom HTTP/2 implementation with HPACK compression, and sub-50μs response times. 6-10x faster than ASP.NET Core for API workloads.</Description>
+    <Description>HTTP/1.1, HTTP/2 and HTTP/3 web framework for .NET 8+, built from scratch. Allocation-conscious routing, a custom HTTP/2 implementation with HPACK, WebSockets, TLS with per-listener ALPN and certificate rotation, response caching, rate limiting and OpenAPI generation.</Description>
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>

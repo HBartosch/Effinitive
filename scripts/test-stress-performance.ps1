@@ -1,6 +1,10 @@
 # Stress Test Script - Pure PowerShell Implementation
 # No external dependencies required
 
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 Write-Host "🚀 EffinitiveFramework Stress Test" -ForegroundColor Cyan
 Write-Host "===================================" -ForegroundColor Cyan
 Write-Host ""
@@ -100,7 +104,7 @@ function Invoke-StressTest {
 
 # Start server in background
 Write-Host "Starting server in Release mode..." -ForegroundColor Yellow
-$serverProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd $PSScriptRoot; dotnet run --configuration Release --project samples/EffinitiveFramework.Sample" -PassThru -WindowStyle Minimized
+$serverProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --configuration Release --project samples/EffinitiveFramework.Sample" -PassThru -WindowStyle Minimized
 
 # Wait for server to start
 Write-Host "Waiting for server to initialize..." -ForegroundColor Yellow
