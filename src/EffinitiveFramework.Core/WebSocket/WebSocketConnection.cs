@@ -14,9 +14,12 @@ namespace EffinitiveFramework.Core.WebSocket;
 /// </summary>
 public sealed class WebSocketConnection : IAsyncDisposable
 {
-    private readonly Stream _stream;
     private readonly PipeReader _reader;
     private readonly PipeWriter _writer;
+    // True when this instance created the pipes and must therefore complete
+    // them. False when they belong to the connection, which completes them
+    // itself; completing another owner's pipes would tear down its transport.
+    private readonly bool _ownsPipes;
     private readonly ArrayBufferWriter<byte> _messageBuffer;
     // RFC 6455 §5.5: control frames carry at most 125 bytes, so this is sized
     // by the specification and never needs to grow.
@@ -32,12 +35,36 @@ public sealed class WebSocketConnection : IAsyncDisposable
     /// </summary>
     public bool IsOpen => !_closeSent && !_closeReceived;
 
+    /// <summary>
+    /// Wrap a stream, for connections that have one: TLS terminates through an
+    /// <see cref="System.Net.Security.SslStream"/> and there is no pipe to take.
+    /// </summary>
     internal WebSocketConnection(Stream stream)
     {
-        _stream = stream;
         _reader = PipeReader.Create(stream, new StreamPipeReaderOptions(bufferSize: 65536, leaveOpen: true));
         _writer = PipeWriter.Create(stream, new StreamPipeWriterOptions(minimumBufferSize: 65536, leaveOpen: true));
         _messageBuffer = new ArrayBufferWriter<byte>(65536);
+        _ownsPipes = true;
+    }
+
+    /// <summary>
+    /// Take the connection's own pipes, for a cleartext connection that already
+    /// has them.
+    /// </summary>
+    /// <remarks>
+    /// The alternative is to adapt those pipes to a <see cref="Stream"/> and
+    /// build a second pipe over it, which costs a copy in each direction and an
+    /// extra flush per message: the stream adapter flushes on write, and the
+    /// pipe above it flushes the adapter afterwards. On an echo workload, where
+    /// every message is a whole read and a whole write, that overhead is the
+    /// per-message cost rather than a rounding error.
+    /// </remarks>
+    internal WebSocketConnection(PipeReader reader, PipeWriter writer)
+    {
+        _reader = reader;
+        _writer = writer;
+        _messageBuffer = new ArrayBufferWriter<byte>(65536);
+        _ownsPipes = false;
     }
 
     /// <summary>
@@ -202,8 +229,13 @@ public sealed class WebSocketConnection : IAsyncDisposable
             catch { /* best effort */ }
         }
 
-        await _reader.CompleteAsync();
-        await _writer.CompleteAsync();
+        // Only complete pipes this instance created. When they belong to the
+        // connection, it completes them during its own teardown.
+        if (_ownsPipes)
+        {
+            await _reader.CompleteAsync();
+            await _writer.CompleteAsync();
+        }
     }
 
     /// <summary>
