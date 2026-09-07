@@ -9,9 +9,26 @@ public class Http2Stream
 {
     public int StreamId { get; }
     public Http2StreamState State { get; private set; }
-    public Dictionary<string, string> Headers { get; } = new();
-    public MemoryStream DataBuffer { get; } = new();
-    public TaskCompletionSource<bool> ResponseComplete { get; } = new();
+
+    // Sized for the pseudo-headers plus a handful of real ones, so a typical
+    // request fills it without the dictionary resizing on the way.
+    public Dictionary<string, string> Headers { get; } = new(8);
+
+    private MemoryStream? _dataBuffer;
+
+    /// <summary>
+    /// Whether any DATA frame has arrived on this stream.
+    /// </summary>
+    /// <remarks>
+    /// A server can hold a great many concurrent streams at once, and most
+    /// carry no request body at all, so the buffer is created on the first
+    /// write rather than with the stream. Check this before touching
+    /// <see cref="DataBuffer"/>, which allocates on access to keep the property
+    /// non-null for callers that expect a stream to be there.
+    /// </remarks>
+    public bool HasBody => _dataBuffer is { Length: > 0 };
+
+    public MemoryStream DataBuffer => _dataBuffer ??= new MemoryStream();
 
     // Outbound (send) flow-control window. Starts at the peer's advertised
     // SETTINGS_INITIAL_WINDOW_SIZE and is consumed as DATA is sent, replenished by
@@ -120,7 +137,7 @@ public class Http2Stream
 
     public void AppendData(ReadOnlySpan<byte> data)
     {
-        DataBuffer.Write(data);
+        (_dataBuffer ??= new MemoryStream()).Write(data);
     }
 }
 

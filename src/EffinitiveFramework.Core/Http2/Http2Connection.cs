@@ -748,12 +748,24 @@ public class Http2Connection : IAsyncDisposable
     {
         try
         {
-            // Convert HTTP/2 headers to HTTP/1.1 request
-            var headers = stream.Headers.Select(kvp => (kvp.Key, kvp.Value)).ToList();
-            
-            // Reset buffer position to read from beginning
-            stream.DataBuffer.Position = 0;
-            var bodyBytes = stream.DataBuffer.ToArray();
+            // Pre-sized and built by hand rather than through LINQ: this runs
+            // once per stream, and a server can hold a great many at once.
+            var headers = new List<(string, string)>(stream.Headers.Count);
+            foreach (var kvp in stream.Headers)
+                headers.Add((kvp.Key, kvp.Value));
+
+            // Most requests carry no body, and touching DataBuffer would create
+            // one for every stream that never had a DATA frame.
+            byte[] bodyBytes;
+            if (stream.HasBody)
+            {
+                stream.DataBuffer.Position = 0;
+                bodyBytes = stream.DataBuffer.ToArray();
+            }
+            else
+            {
+                bodyBytes = [];
+            }
             
             var request = Http2RequestConverter.ConvertToHttp1Request(headers, bodyBytes, _remoteIpAddress);
             request.RemoteIpAddressText = _remoteIpText;
