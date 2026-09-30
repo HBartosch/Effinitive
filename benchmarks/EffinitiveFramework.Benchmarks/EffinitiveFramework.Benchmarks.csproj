@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
     <ProjectReference Include="..\..\src\EffinitiveFramework.Core\EffinitiveFramework.Core.csproj" />
     <PackageReference Include="System.IO.Hashing" Version="10.0.0" />
 </ItemGroup>
