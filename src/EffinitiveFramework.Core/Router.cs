@@ -27,10 +27,18 @@ public sealed class Router
 #if NET9_0_OR_GREATER
     // Span-keyed views of the three frozen tables, built once by Freeze().
     //
-    // Obtaining one verifies that the dictionary's comparer can hash and compare the alternate
-    // key type, and that answer is fixed for the life of the table. Asking per lookup cost more
-    // than the string it saved: on a miss, which is the path every 404 takes, it turned a 56 ns
-    // lookup into a 78 ns one to avoid 32 bytes.
+    // Obtaining one verifies that the table's comparer can hash and compare the alternate key
+    // type, and that answer is fixed for the life of an immutable table. Asking per lookup cost
+    // more than the string it saved: on a miss, which is the path every 404 takes, it turned a
+    // 56 ns lookup into a 78 ns one to avoid 32 bytes.
+    //
+    // Each of these is two references wide, a delegate and the table, so a reader racing the
+    // write could in principle see one of them and not the other. It cannot happen here, and
+    // not because of the width: Freeze() returns early once _frozen is set, so there is exactly
+    // one write, and every reader is gated behind a null check on the table that write also
+    // populates. FindRoute and GetAllowedMethods throw or return before touching a view that was
+    // never built. Freeze() is a startup operation and is not itself safe to call concurrently,
+    // which is the usual contract for a builder and is why AddRoute throws once it has run.
     private FrozenDictionary<string, RouteNode>.AlternateLookup<ReadOnlySpan<char>> _routeLookup;
     private FrozenDictionary<string, ParametricRoute[]>.AlternateLookup<ReadOnlySpan<char>> _paramLookup;
     private FrozenDictionary<string, Func<WebSocketConnection, CancellationToken, Task>>.AlternateLookup<ReadOnlySpan<char>> _wsLookup;
