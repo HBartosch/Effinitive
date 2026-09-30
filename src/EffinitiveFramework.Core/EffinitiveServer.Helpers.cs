@@ -300,6 +300,25 @@ public sealed partial class EffinitiveServer
     }
 
     /// <summary>
+    /// Hands the transport to a WebSocket, taking the connection's own pipes where there are any.
+    /// Returns null when the connection has no usable transport.
+    /// </summary>
+    /// <remarks>
+    /// Wrapping those pipes in a Stream and then building a second pipe over that costs a copy
+    /// each way and an extra flush per message, which on an echo workload is most of what a
+    /// message costs. A TLS connection has no pipes to take, because it reads and writes through
+    /// its SslStream.
+    /// </remarks>
+    private static WebSocketConnection? CreateWebSocketConnection(HttpConnection connection)
+    {
+        if (connection.TransportPipes is { } pipes)
+            return new WebSocketConnection(pipes.Reader, pipes.Writer);
+
+        var stream = connection.GetOrCreateStream();
+        return stream == null ? null : new WebSocketConnection(stream);
+    }
+
+    /// <summary>
     /// Perform WebSocket upgrade handshake and hand off to the WebSocket handler.
     /// </summary>
     private async Task HandleWebSocketUpgradeAsync(
@@ -328,34 +347,18 @@ public sealed partial class EffinitiveServer
         // Send the upgrade response
         await connection.WriteResponseAsync(response, cancellationToken, flush: true);
 
-        // The connection now belongs to the WebSocket. On a cleartext
-        // connection take its pipes directly; wrapping them in a Stream and
-        // building a second pipe over it costs a copy each way and an extra
-        // flush per message, which on an echo workload is the per-message cost.
-        // TLS has no pipes to take: it reads and writes through its SslStream.
-        WebSocketConnection wsConnection;
-        var pipes = connection.TransportPipes;
-        if (pipes is { } p)
+        // The connection now belongs to the WebSocket.
+        await using var webSocket = CreateWebSocketConnection(connection);
+        if (webSocket == null)
         {
-            wsConnection = new WebSocketConnection(p.Reader, p.Writer);
+            if (!_isProduction)
+                Console.WriteLine("WebSocket upgrade failed: no underlying transport available");
+            return;
         }
-        else
-        {
-            var stream = connection.GetOrCreateStream();
-            if (stream == null)
-            {
-                if (!_isProduction)
-                    Console.WriteLine("WebSocket upgrade failed: no underlying transport available");
-                return;
-            }
-            wsConnection = new WebSocketConnection(stream);
-        }
-
-        await using var _ws = wsConnection;
 
         try
         {
-            await handler(wsConnection, cancellationToken);
+            await handler(webSocket, cancellationToken);
         }
         catch (Exception ex)
         {
