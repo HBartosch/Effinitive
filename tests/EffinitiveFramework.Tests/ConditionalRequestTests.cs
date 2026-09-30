@@ -213,6 +213,45 @@ public class ConditionalRequestTests
 
     // ── Helper ──
 
+    // ── ComputeBodyETag ──
+
+    // The tag is opaque to a client (RFC 9110 §8.8.3), but it must be stable:
+    // the same representation has to yield the same tag across processes and
+    // across releases, or every client revalidates against a tag it has never
+    // seen. These pin the wire value so a change to how it is produced cannot
+    // silently change what it is.
+    [Theory]
+    [InlineData("", "\"e3b0c44298fc1c14\"")]
+    [InlineData("hello", "\"2cf24dba5fb0a30e\"")]
+    public void ComputeBodyETag_IsTheQuotedLowercaseHexOfTheFirstEightDigestBytes(string body, string expected)
+    {
+        Assert.Equal(expected, EffinitiveServer.ComputeBodyETag(System.Text.Encoding.UTF8.GetBytes(body)));
+    }
+
+    [Fact]
+    public void ComputeBodyETag_NullBody_MatchesEmptyBody()
+    {
+        Assert.Equal(
+            EffinitiveServer.ComputeBodyETag(System.Array.Empty<byte>()),
+            EffinitiveServer.ComputeBodyETag(null));
+    }
+
+    [Fact]
+    public void ComputeBodyETag_AgreesWithAHexEncodedSha256Prefix_ForArbitraryBodies()
+    {
+        var random = new System.Random(20260930);
+        foreach (var length in new[] { 1, 7, 31, 32, 33, 1024, 4096 })
+        {
+            var body = new byte[length];
+            random.NextBytes(body);
+
+            var digest = System.Security.Cryptography.SHA256.HashData(body);
+            var expected = $"\"{System.Convert.ToHexString(digest, 0, 8).ToLowerInvariant()}\"";
+
+            Assert.Equal(expected, EffinitiveServer.ComputeBodyETag(body));
+        }
+    }
+
     private static HttpRequest MakeRequest(string method = "GET")
     {
         var req = new HttpRequest { Method = method, Path = "/", HttpVersion = "HTTP/1.1" };
