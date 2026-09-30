@@ -136,4 +136,25 @@ public class HttpRequestCostBenchmarks
         await _server.HandleRequestAsync(request, _response, CancellationToken.None);
         _server.ApplyConditionalHeaders(request, _response, isHead: false);
     }
+
+    /// <summary>
+    /// The whole path again, with the request reset and reused the way the response already is.
+    /// </summary>
+    /// <remarks>
+    /// The connection loop does not do this today: it reuses one response per connection but
+    /// allocates a request per request. This measures what wiring the existing Reset() into that
+    /// loop would be worth, before deciding whether the lifetime work it needs is justified.
+    /// </remarks>
+    [Benchmark]
+    public async Task WholeEndpointReusedRequest()
+    {
+        _reused.Reset();
+        var buffer = new ReadOnlySequence<byte>(_rawEndpoint);
+        HttpRequestParser.TryParseRequest(ref buffer, _reused, out _, out _, MaxBodySize);
+
+        _server.ValidateRequest(_reused);
+        _response.Reset();
+        await _server.HandleRequestAsync(_reused, _response, CancellationToken.None);
+        _server.ApplyConditionalHeaders(_reused, _response, isHead: false);
+    }
 }
