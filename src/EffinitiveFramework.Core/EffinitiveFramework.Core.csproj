@@ -34,6 +34,7 @@ v2.3.0: Response caching. UseResponseCaching() serves repeat GET/HEAD requests f
 
   <ItemGroup>
     <InternalsVisibleTo Include="EffinitiveFramework.Tests" />
+    <InternalsVisibleTo Include="EffinitiveFramework.Benchmarks" />
   </ItemGroup>
 
   <!-- HTTP/3 (QUIC) only available on .NET 10+ -->
