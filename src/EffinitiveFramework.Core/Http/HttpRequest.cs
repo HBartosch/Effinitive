@@ -7,6 +7,19 @@ namespace EffinitiveFramework.Core.Http;
 /// <summary>
 /// Represents a parsed HTTP request with minimal allocations
 /// </summary>
+/// <remarks>
+/// <para>
+/// Valid for the duration of the request that is being handled, and no longer. A connection
+/// parses every one of its requests into a single instance, resetting it before each, so a
+/// reference kept past the end of a handler will be seen to change and then to be reused by
+/// the next request on that connection, or by a different peer once the connection is pooled.
+/// </para>
+/// <para>
+/// To carry something into work that outlives the request, copy the values needed and pass
+/// those. Do not pass the request itself to a background task, and do not capture it in a
+/// continuation that is not awaited before the handler returns.
+/// </para>
+/// </remarks>
 public sealed class HttpRequest
 {
     private string _path = string.Empty;

@@ -25,6 +25,16 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
     private bool _isSecure;
     private CancellationTokenSource? _timeoutCts;
 
+    /// <summary>
+    /// The one request this connection parses into, reset before each use.
+    /// </summary>
+    /// <remarks>
+    /// A connection serves its requests one after another, so only one is ever live on it, and
+    /// the response object is already reused on the same reasoning. See
+    /// <see cref="HttpRequest"/> for what that means for code that holds on to one.
+    /// </remarks>
+    private readonly HttpRequest _request = new();
+
     // High-performance transport (plaintext only)
     private SocketTransportConnection? _transport;
     
@@ -231,7 +241,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
 
         try
         {
-            var request = new HttpRequest { RemoteIpAddress = RemoteIpAddress, RemoteIpAddressText = RemoteIpAddressText };
+            var request = BeginRequest();
 
             while (true)
             {
@@ -438,7 +448,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
             return null;
         }
 
-        var request = new HttpRequest { RemoteIpAddress = RemoteIpAddress, RemoteIpAddressText = RemoteIpAddressText };
+        var request = BeginRequest();
         if (HttpRequestParser.TryParseRequest(
             ref buffer,
             request,
@@ -457,6 +467,21 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
+    /// Clears the connection's request and stamps it with the peer address, ready to parse into.
+    /// </summary>
+    /// <remarks>
+    /// The address is re-applied rather than preserved across the reset, so that a request carries
+    /// only what this connection put there and Reset() has no exceptions to remember.
+    /// </remarks>
+    private HttpRequest BeginRequest()
+    {
+        _request.Reset();
+        _request.RemoteIpAddress = RemoteIpAddress;
+        _request.RemoteIpAddressText = RemoteIpAddressText;
+        return _request;
+    }
+
+    /// <summary>
     /// Reset connection for reuse in pool
     /// </summary>
     public void Reset()
@@ -464,6 +489,12 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
         _timeoutCts?.Cancel();
         _timeoutCts?.Dispose();
         _timeoutCts = null;
+
+        // The pooled connection will serve a different peer next. Clearing here returns any
+        // rented body buffer and drops references to the last request rather than holding them
+        // for as long as the connection sits in the pool.
+        _request.Reset();
+
         // Keep socket/stream/pipelines for reuse
     }
 
