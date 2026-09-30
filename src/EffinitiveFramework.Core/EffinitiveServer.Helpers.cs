@@ -309,16 +309,30 @@ public sealed partial class EffinitiveServer
         // Send the upgrade response
         await connection.WriteResponseAsync(response, cancellationToken, flush: true);
 
-        // The underlying stream is now a WebSocket connection
-        var stream = connection.GetOrCreateStream();
-        if (stream == null)
+        // The connection now belongs to the WebSocket. On a cleartext
+        // connection take its pipes directly; wrapping them in a Stream and
+        // building a second pipe over it costs a copy each way and an extra
+        // flush per message, which on an echo workload is the per-message cost.
+        // TLS has no pipes to take: it reads and writes through its SslStream.
+        WebSocketConnection wsConnection;
+        var pipes = connection.TransportPipes;
+        if (pipes is { } p)
         {
-            if (!_isProduction)
-                Console.WriteLine("WebSocket upgrade failed: no underlying stream available");
-            return;
+            wsConnection = new WebSocketConnection(p.Reader, p.Writer);
+        }
+        else
+        {
+            var stream = connection.GetOrCreateStream();
+            if (stream == null)
+            {
+                if (!_isProduction)
+                    Console.WriteLine("WebSocket upgrade failed: no underlying transport available");
+                return;
+            }
+            wsConnection = new WebSocketConnection(stream);
         }
 
-        await using var wsConnection = new WebSocketConnection(stream);
+        await using var _ws = wsConnection;
 
         try
         {

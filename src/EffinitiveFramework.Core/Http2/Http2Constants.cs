@@ -38,10 +38,21 @@ public static class Http2Constants
     // Default settings values
     public const uint DefaultHeaderTableSize = 4096;
     public const uint DefaultEnablePush = 1; // RFC 7540 §6.5.2: Server push enabled by default (client can disable via SETTINGS)
-    public const uint DefaultMaxConcurrentStreams = 256;
+    // RFC 9113 §5.1.2 leaves this to the server. It is a promise about how much
+    // concurrent work a peer may create, and the promise is per connection, so
+    // the memory it commits scales with connection count as well: at a thousand
+    // connections, 256 apiece is a quarter of a million concurrent streams, each
+    // with its own state. 100 matches what Kestrel advertises.
+    public const uint DefaultMaxConcurrentStreams = 100;
     public const int DefaultMaxPushedStreams = 10;
     public const int DefaultMaxPushedResourceSize = 1024 * 1024; // 1MB
-    public const uint DefaultInitialWindowSize = 1048576; // 1MB — larger window for better throughput
+
+    // RFC 9113 §6.9.2: this is what the server undertakes to buffer per stream
+    // before the peer must wait. Multiplied by the concurrent stream limit it is
+    // the server's exposure per connection, so 1 MB here was an undertaking to
+    // hold 256 MB for any one peer that asked. 96 KB is what Kestrel advertises,
+    // and is well above the 64 KB the RFC starts at.
+    public const uint DefaultInitialWindowSize = 98304; // 96 KB
     public const uint DefaultMaxFrameSize = 16384;
     public const uint DefaultMaxHeaderListSize = 65536; // 64KB — allow large header lists
     

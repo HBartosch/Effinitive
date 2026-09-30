@@ -71,6 +71,18 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
+    /// The connection's pipes, when it has them. Null on a TLS connection,
+    /// which reads and writes through its <see cref="System.Net.Security.SslStream"/>.
+    /// </summary>
+    /// <remarks>
+    /// Offered so a protocol that takes over the connection can read and write
+    /// the transport directly, rather than through the <see cref="Stream"/>
+    /// adapter, which would copy in each direction and flush twice per write.
+    /// </remarks>
+    internal (PipeReader Reader, PipeWriter Writer)? TransportPipes =>
+        _stream == null && _reader != null && _writer != null ? (_reader, _writer) : null;
+
+    /// <summary>
     /// Initialize connection with a socket (public API — legacy/TLS path).
     /// </summary>
     public Task InitializeAsync(
