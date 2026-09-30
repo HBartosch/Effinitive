@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json;
 using EffinitiveFramework.Core.Http;
@@ -95,9 +96,27 @@ public sealed partial class EffinitiveServer
     /// </summary>
     internal static string ComputeBodyETag(byte[]? body)
     {
-        var hash = SHA256.HashData(body ?? Array.Empty<byte>());
-        return $"\"{Convert.ToHexString(hash, 0, 8).ToLowerInvariant()}\"";
+        Span<byte> hash = stackalloc byte[32];
+        SHA256.HashData(body ?? Array.Empty<byte>(), hash);
+        return FormatETag(BinaryPrimitives.ReadUInt64BigEndian(hash));
     }
+
+    /// <summary>
+    /// Renders the first eight digest bytes as a quoted lowercase hex tag, in one allocation.
+    /// </summary>
+    /// <remarks>
+    /// The tag is an opaque string the client only ever compares for equality (RFC 9110 §8.8.3),
+    /// so the whole of it is built in place rather than by way of a digest array, an uppercase
+    /// hex string and a lowercased copy of that.
+    /// </remarks>
+    private static string FormatETag(ulong value) => string.Create(18, value, static (destination, v) =>
+    {
+        ReadOnlySpan<char> hex = "0123456789abcdef";
+        destination[0] = '"';
+        for (int i = 0; i < 16; i++)
+            destination[1 + i] = hex[(int)((v >> (60 - (i * 4))) & 0xF)];
+        destination[17] = '"';
+    });
 
     private void SerializeResponse(HttpResponse response, object? responseObj, string contentType)
     {
