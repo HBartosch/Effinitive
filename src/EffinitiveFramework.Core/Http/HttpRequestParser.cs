@@ -185,7 +185,7 @@ public static class HttpRequestParser
 
         // Validate method is all tokens (visible ASCII minus delimiters)
         ValidateMethodToken(methodBytes);
-        request.Method = Encoding.ASCII.GetString(methodBytes);
+        request.Method = WellKnownTokens.Method(methodBytes) ?? Encoding.ASCII.GetString(methodBytes);
 
         // Find last SP — HTTP-version comes after it
         int lastSpace = requestLineBytes.LastIndexOf(Space);
@@ -215,7 +215,7 @@ public static class HttpRequestParser
 
         // Parse HTTP-version
         var versionBytes = requestLineBytes.Slice(lastSpace + 1);
-        var versionStr = Encoding.ASCII.GetString(versionBytes);
+        var versionStr = WellKnownTokens.Version(versionBytes) ?? Encoding.ASCII.GetString(versionBytes);
         ValidateHttpVersion(versionStr);
         request.HttpVersion = versionStr;
 
@@ -421,7 +421,7 @@ public static class HttpRequestParser
             // Validate header value (no NUL, no bare CR/LF, no most control chars)
             ValidateHeaderValue(valueBytes);
 
-            var name = Encoding.ASCII.GetString(nameBytes);
+            var name = WellKnownTokens.HeaderName(nameBytes) ?? Encoding.ASCII.GetString(nameBytes);
             var value = Encoding.ASCII.GetString(valueBytes);
 
             // Reject headers with underscores in name — prevents smuggling via

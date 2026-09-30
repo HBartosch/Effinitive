@@ -33,6 +33,19 @@ public static class HeaderNames
     public const string Vary = "Vary";
     public const string XForwardedFor = "X-Forwarded-For";
 
+    // Request-side names a client sends on almost every request. Present so the parser can
+    // store a canonical instance rather than decoding the same bytes into a new string each time.
+    public const string AcceptLanguage = "Accept-Language";
+    public const string Cookie = "Cookie";
+    public const string Origin = "Origin";
+    public const string Referer = "Referer";
+    public const string SecWebSocketExtensions = "Sec-WebSocket-Extensions";
+    public const string SecWebSocketProtocol = "Sec-WebSocket-Protocol";
+    public const string SecWebSocketVersion = "Sec-WebSocket-Version";
+    public const string TE = "TE";
+    public const string UserAgent = "User-Agent";
+    public const string XRequestedWith = "X-Requested-With";
+
     // The de-facto rate-limit headers. The IETF draft drops the X- prefix, but the prefixed forms are
     // what clients and gateways actually look for today.
     public const string XRateLimitLimit = "X-RateLimit-Limit";
