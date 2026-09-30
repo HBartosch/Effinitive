@@ -91,36 +91,31 @@ public class WebSocketEchoBenchmarks
 
 
     /// <summary>
-    /// The same pipe traffic and the same pending-read pattern with no
-    /// WebSocket layer at all: a read that has to wait, a write, and a drain.
-    /// Whatever this costs is the floor; the difference against the echo above
-    /// is what the framing layer adds.
+    /// The floor: the same pipe traffic with no WebSocket layer, and an async
+    /// helper so the read genuinely suspends before the data arrives.
     /// </summary>
-    [Benchmark(Description = "Control: bare pipes, read pending when data arrives")]
+    /// <remarks>
+    /// Awaiting the ValueTask only after writing would not suspend at all: the
+    /// write completes the read first, so the await finds it already done and
+    /// runs on. Registering the continuation up front is what makes this
+    /// comparable to a connection waiting on a socket.
+    /// </remarks>
+    [Benchmark(Description = "Control: bare pipes, genuinely suspended read")]
     public async Task RawPipeAsyncCompletion()
     {
-        var pending = _ctlIn.Reader.ReadAsync();
+        var pending = ReadAndDrainAsync(_ctlIn.Reader);
         await _ctlIn.Writer.WriteAsync(_clientFrame);
-
-        var result = await pending;
-        _ctlIn.Reader.AdvanceTo(result.Buffer.End);
+        await pending;
 
         await _ctlOut.Writer.WriteAsync(_reply);
         var back = await _ctlOut.Reader.ReadAsync();
         _ctlOut.Reader.AdvanceTo(back.Buffer.End);
     }
 
-
-    /// <summary>
-    /// The receive half alone on the pending path, to apportion the cost
-    /// between suspending inside ReceiveAsync and everything after it.
-    /// </summary>
-    [Benchmark(Description = "Receive only, pending when frame arrives")]
-    public async Task ReceiveOnlyAsyncCompletion()
+    private static async ValueTask ReadAndDrainAsync(PipeReader reader)
     {
-        var receive = _connection.ReceiveAsync();
-        await _inbound.Writer.WriteAsync(_clientFrame);
-        _ = await receive;
+        var result = await reader.ReadAsync();
+        reader.AdvanceTo(result.Buffer.End);
     }
 
     /// <summary>RFC 6455 §5.3: frames from a client are masked.</summary>

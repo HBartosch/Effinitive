@@ -24,6 +24,13 @@ public sealed class WebSocketConnection : IAsyncDisposable
     // RFC 6455 §5.5: control frames carry at most 125 bytes, so this is sized
     // by the specification and never needs to grow.
     private readonly byte[] _controlScratch = new byte[125];
+
+    // Message assembly state. Fields rather than locals in ReceiveAsync: a
+    // local that is live across an await becomes a field on the compiler's
+    // state machine, which is boxed on every suspension.
+    private WebSocketOpcode _messageOpcode;
+    private bool _firstFrame;
+    private bool _pongPending;
     private bool _closeSent;
     private bool _closeReceived;
     // Set by ReceiveAsync when more frames remain in the pipe buffer after returning a message.
@@ -85,105 +92,145 @@ public sealed class WebSocketConnection : IAsyncDisposable
     public async ValueTask<WebSocketMessage?> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         _messageBuffer.ResetWrittenCount(); // Reuse existing allocation — no heap object per call.
-        WebSocketOpcode messageOpcode = default;
-        bool firstFrame = true;
-        bool gotMessage = false;
+        _messageOpcode = default;
+        _firstFrame = true;
 
-        while (!gotMessage)
+        while (true)
         {
             var result = await _reader.ReadAsync(cancellationToken);
             if (result.IsCanceled) throw new OperationCanceledException(cancellationToken);
 
-            var buffer = result.Buffer;
-            SequencePosition consumed = buffer.Start;
+            var step = ParseFrames(result.Buffer, out var consumed, out var examined);
 
-            while (WebSocketFrame.TryParseHeader(buffer, out var header, out var headerConsumed))
+            switch (step)
             {
-                var afterHeader = buffer.Slice(headerConsumed);
-                if (afterHeader.Length < header.PayloadLength) break; // wait for rest of payload
+                case ReceiveStep.Message:
+                    _reader.AdvanceTo(consumed);
+                    await FlushPendingPongAsync(cancellationToken);
+                    return new WebSocketMessage(
+                        _messageOpcode == WebSocketOpcode.Text ? WebSocketMessageType.Text : WebSocketMessageType.Binary,
+                        _messageBuffer.WrittenMemory);
 
-                var payloadSeq = afterHeader.Slice(0, header.PayloadLength);
-                consumed = afterHeader.GetPosition(header.PayloadLength);
-                buffer = buffer.Slice(consumed);
+                case ReceiveStep.CloseReceived:
+                    _closeReceived = true;
+                    _reader.AdvanceTo(consumed);
+                    if (!_closeSent)
+                        await SendCloseAsync(1000, null, cancellationToken);
+                    return null;
 
-                if (header.IsControl)
-                {
-                    // RFC 6455 §5.5: control frames MUST have payload ≤ 125 bytes and FIN=1.
-                    if (header.PayloadLength > 125 || !header.Fin)
-                    {
-                        _reader.AdvanceTo(consumed);
-                        await SendCloseAsync(1002, "protocol error", cancellationToken);
-                        return null;
-                    }
-                    // Reused per connection rather than stack-allocated per
-                    // frame: one read can carry many control frames, and a
-                    // stackalloc inside the loop grows the frame by up to 125
-                    // bytes for each of them (CA2014). The length is bounded by
-                    // the check above, so the slice is always in range.
-                    var ctrlPayload = _controlScratch.AsSpan(0, header.PayloadLength);
-                    payloadSeq.CopyTo(ctrlPayload);
-                    if (header.Masked) WebSocketFrame.ApplyMask(ctrlPayload, header.MaskKey);
+                case ReceiveStep.ProtocolError:
+                    _reader.AdvanceTo(consumed);
+                    await SendCloseAsync(1002, "protocol error", cancellationToken);
+                    return null;
 
-                    switch (header.Opcode)
-                    {
-                        case WebSocketOpcode.Ping:
-                            WriteFrameHeader(_writer, WebSocketOpcode.Pong, ctrlPayload.Length);
-                            _writer.Write(ctrlPayload); // sync — no await, span safe before FlushAsync
-                            await _writer.FlushAsync(cancellationToken);
-                            break;
-                        case WebSocketOpcode.Close:
-                            _closeReceived = true;
-                            _reader.AdvanceTo(consumed);
-                            if (!_closeSent)
-                                await SendCloseAsync(1000, null, cancellationToken);
-                            return null;
-                        // Pong: RFC 6455 §5.5.3 — ignore unsolicited pong
-                    }
-                    continue;
-                }
-
-                // Data frame: copy payload directly into reusable message buffer, then unmask.
-                if (firstFrame) { messageOpcode = header.Opcode; firstFrame = false; }
-
-                var dest = _messageBuffer.GetSpan(header.PayloadLength);
-                payloadSeq.CopyTo(dest);
-                if (header.Masked) WebSocketFrame.ApplyMask(dest.Slice(0, header.PayloadLength), header.MaskKey);
-                _messageBuffer.Advance(header.PayloadLength);
-
-                if (header.Fin)
-                {
-                    // Defer the flush only when another WHOLE frame is already
-                    // buffered, so the response about to be written is certain
-                    // to be followed by another without waiting on the network.
-                    //
-                    // "Any bytes remain" is not the same test. RFC 6455 §5.2
-                    // frames carry a length, so a frame is only actionable once
-                    // that many payload bytes have arrived; a complete frame
-                    // trailed by one byte of the next satisfies "bytes remain"
-                    // while offering nothing to process. Deferring on that holds
-                    // an answer the client has already earned until the rest of
-                    // an unrelated frame arrives, which a client waiting on that
-                    // answer before sending more never sends.
-                    _hasPendingData = HasCompleteFrame(buffer);
-                    gotMessage = true;
+                default:
+                    // AdvanceTo(consumed, examined) tells the pipe to wait for data past
+                    // examined; AdvanceTo(consumed) alone would return immediately.
+                    _reader.AdvanceTo(consumed, examined);
+                    await FlushPendingPongAsync(cancellationToken);
+                    if (result.IsCompleted) return null;
                     break;
+            }
+        }
+    }
+
+    private ValueTask FlushPendingPongAsync(CancellationToken cancellationToken)
+    {
+        if (!_pongPending) return ValueTask.CompletedTask;
+        _pongPending = false;
+        return new ValueTask(_writer.FlushAsync(cancellationToken).AsTask());
+    }
+
+    private enum ReceiveStep : byte
+    {
+        NeedMoreData,
+        Message,
+        CloseReceived,
+        ProtocolError,
+    }
+
+    /// <summary>
+    /// Consume whole frames from <paramref name="buffer"/> until a message is
+    /// complete or the data runs out, and report what the caller must do next.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not async. Every local here is live only within one call,
+    /// so none of them, and none of the multi-word structs among them, ends up
+    /// on the state machine that ReceiveAsync boxes when it suspends. Anything
+    /// needing an await is reported back rather than performed: a pong is
+    /// written but left unflushed, and close is signalled rather than sent.
+    /// </remarks>
+    private ReceiveStep ParseFrames(
+        ReadOnlySequence<byte> buffer,
+        out SequencePosition consumed,
+        out SequencePosition examined)
+    {
+        consumed = buffer.Start;
+        examined = buffer.End;
+
+        while (WebSocketFrame.TryParseHeader(buffer, out var header, out var headerConsumed))
+        {
+            var afterHeader = buffer.Slice(headerConsumed);
+            if (afterHeader.Length < header.PayloadLength) break; // wait for rest of payload
+
+            var payloadSeq = afterHeader.Slice(0, header.PayloadLength);
+            consumed = afterHeader.GetPosition(header.PayloadLength);
+            buffer = buffer.Slice(consumed);
+
+            if (header.IsControl)
+            {
+                // RFC 6455 §5.5: control frames MUST have payload ≤ 125 bytes and FIN=1.
+                if (header.PayloadLength > 125 || !header.Fin)
+                    return ReceiveStep.ProtocolError;
+
+                // Reused per connection rather than stack-allocated per frame:
+                // one read can carry many control frames, and a stackalloc
+                // inside the loop grows the frame by up to 125 bytes for each
+                // of them (CA2014). The length is bounded by the check above.
+                var ctrlPayload = _controlScratch.AsSpan(0, header.PayloadLength);
+                payloadSeq.CopyTo(ctrlPayload);
+                if (header.Masked) WebSocketFrame.ApplyMask(ctrlPayload, header.MaskKey);
+
+                switch (header.Opcode)
+                {
+                    case WebSocketOpcode.Ping:
+                        WriteFrameHeader(_writer, WebSocketOpcode.Pong, ctrlPayload.Length);
+                        _writer.Write(ctrlPayload);
+                        _pongPending = true; // flushed by the caller, which can await
+                        break;
+                    case WebSocketOpcode.Close:
+                        return ReceiveStep.CloseReceived;
+                    // Pong: RFC 6455 §5.5.3 — ignore unsolicited pong
                 }
+                continue;
             }
 
-            // AdvanceTo(consumed) tells the pipe "everything up to consumed is done; give me the rest
-            // immediately." AdvanceTo(consumed, buffer.End) tells it to wait for NEW data past buffer.End.
-            if (gotMessage)
-                _reader.AdvanceTo(consumed);
-            else
+            // Data frame: copy payload directly into reusable message buffer, then unmask.
+            if (_firstFrame) { _messageOpcode = header.Opcode; _firstFrame = false; }
+
+            var dest = _messageBuffer.GetSpan(header.PayloadLength);
+            payloadSeq.CopyTo(dest);
+            if (header.Masked) WebSocketFrame.ApplyMask(dest.Slice(0, header.PayloadLength), header.MaskKey);
+            _messageBuffer.Advance(header.PayloadLength);
+
+            if (header.Fin)
             {
-                _reader.AdvanceTo(consumed, buffer.End);
-                if (result.IsCompleted) return null;
+                // Defer the flush only when another WHOLE frame is already
+                // buffered, so the response about to be written is certain to be
+                // followed by another without waiting on the network.
+                //
+                // RFC 6455 §5.2 frames carry a length, so a frame is only
+                // actionable once that many payload bytes have arrived; a
+                // complete frame trailed by one byte of the next offers nothing
+                // to process, and deferring on it holds an answer the client has
+                // already earned.
+                _hasPendingData = HasCompleteFrame(buffer);
+                examined = consumed;
+                return ReceiveStep.Message;
             }
         }
 
-        return new WebSocketMessage(
-            messageOpcode == WebSocketOpcode.Text ? WebSocketMessageType.Text : WebSocketMessageType.Binary,
-            _messageBuffer.WrittenMemory);
+        return ReceiveStep.NeedMoreData;
     }
 
     /// <summary>
