@@ -174,14 +174,16 @@ public sealed partial class EffinitiveServer
                     if (!response.GzipCompressionLevel.HasValue)
                         ApplyConditionalHeaders(request, response, isHead);
 
-                    // HEAD responses must not include a body
+                    // RFC 9110 §9.3.2: a HEAD response carries no content. Where the length is
+                    // already known it is still advertised, since the same fields should be sent
+                    // as for GET; where the content would only exist once generated, §9.3.2
+                    // permits omitting the field rather than generating it to measure it.
                     if (isHead)
                     {
                         if (response.Body != null && response.Body.Length > 0)
-                        {
                             response.Headers["Content-Length"] = response.Body.Length.ToString();
-                            response.Body = null;
-                        }
+
+                        response.ClearBody();
                     }
 
                     // Flush immediately when this response ends the connection so the client

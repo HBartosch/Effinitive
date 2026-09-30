@@ -192,7 +192,7 @@ public sealed partial class EffinitiveServer
             {
                 var etag = response.Headers[HeaderNames.ETag];
                 response.StatusCode = 304;
-                response.Body = null;
+                response.ClearBody();
                 response.Headers[HeaderNames.ETag] = etag;
             }
         }
@@ -209,7 +209,7 @@ public sealed partial class EffinitiveServer
             {
                 var etag = response.Headers.TryGetValue(HeaderNames.ETag, out var e) ? e : null;
                 response.StatusCode = 304;
-                response.Body = null;
+                response.ClearBody();
                 if (etag != null) response.Headers[HeaderNames.ETag] = etag;
             }
         }

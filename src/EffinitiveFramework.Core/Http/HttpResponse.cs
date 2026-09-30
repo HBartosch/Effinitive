@@ -129,6 +129,31 @@ public sealed class HttpResponse
     /// <summary>
     /// Reset the response for reuse
     /// </summary>
+    /// <summary>
+    /// Drops every body this response might send, leaving its status and header fields alone.
+    /// </summary>
+    /// <remarks>
+    /// A response can carry its content as <see cref="Body"/>, as a <see cref="BodyStream"/>, as a
+    /// <see cref="BodyObject"/> still to be serialized, or as a <see cref="StreamHandler"/>. A
+    /// status that must not carry content has to drop all four: clearing only the first leaves a
+    /// deferred object to be serialized by the writer, which then sends content under a status
+    /// that promised none, and sends it without a length, so the peer reads it as the start of
+    /// the next response. See RFC 9110 §15.4.5 for 304 and §9.3.2 for HEAD.
+    /// </remarks>
+    public void ClearBody()
+    {
+        Body = null;
+        if (BodyStream != null)
+        {
+            BodyStream.Dispose();
+            BodyStream = null;
+        }
+        BodyStreamLength = 0;
+        BodyObject = null;
+        BodySerializerOptions = null;
+        StreamHandler = null;
+    }
+
     public void Reset()
     {
         StatusCode = 200;
