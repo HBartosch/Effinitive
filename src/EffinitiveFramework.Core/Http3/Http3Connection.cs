@@ -18,7 +18,6 @@ public sealed class Http3Connection : IAsyncDisposable
     private readonly Func<HttpRequest, Task<HttpResponse>>? _requestHandler;
     private readonly QpackDecoder _qpackDecoder = new();
     private readonly QpackEncoder _qpackEncoder = new();
-    private readonly SemaphoreSlim _maxConcurrentStreams;
     private readonly List<QuicStream> _uniStreams = new();
 
     // Critical streams tracked by type (like Kestrel)
@@ -56,7 +55,6 @@ public sealed class Http3Connection : IAsyncDisposable
     {
         _quicConnection = quicConnection;
         _requestHandler = requestHandler;
-        _maxConcurrentStreams = new SemaphoreSlim(256, 256);
 
         // Unmap IPv4-mapped IPv6 addresses so a client reaches the same rate-limit partition whether it
         // arrives over HTTP/3 or HTTP/1.1.
@@ -201,7 +199,6 @@ public sealed class Http3Connection : IAsyncDisposable
 
     private async Task HandleStreamAsync(QuicStream stream, CancellationToken cancellationToken)
     {
-        await _maxConcurrentStreams.WaitAsync(cancellationToken);
         try
         {
             // Read frames from the stream
@@ -258,7 +255,6 @@ public sealed class Http3Connection : IAsyncDisposable
         }
         finally
         {
-            _maxConcurrentStreams.Release();
             await stream.DisposeAsync();
         }
     }
@@ -510,7 +506,6 @@ public sealed class Http3Connection : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _maxConcurrentStreams.Dispose();
         await _quicConnection.DisposeAsync();
     }
 }

@@ -381,6 +381,12 @@ public sealed partial class EffinitiveServer
             {
                 DefaultStreamErrorCode = 0x0102, // H3_INTERNAL_ERROR
                 DefaultCloseErrorCode = 0x0100,  // H3_NO_ERROR
+
+                // Stated rather than left to the default, because this is the only place the limit
+                // costs nothing to enforce: the transport simply stops delivering streams past it.
+                // The same number the HTTP/2 path advertises, so one peer is promised the same
+                // concurrency whichever protocol it arrives on.
+                MaxInboundBidirectionalStreams = (int)Http2.Http2Constants.DefaultMaxConcurrentStreams,
                 ServerAuthenticationOptions = new SslServerAuthenticationOptions
                 {
                     ServerCertificate = _options.TlsOptions.Certificate,
