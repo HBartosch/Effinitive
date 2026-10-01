@@ -260,6 +260,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
                     {
                         _reader.AdvanceTo(consumed);
                         LastActivity = DateTime.UtcNow;
+                        StampConnectionState(request);
                         // Reset the CTS for the next read instead of disposing
                         TryResetTimeoutCts();
                         return request;
@@ -458,6 +459,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
         {
             _reader.AdvanceTo(consumed);
             LastActivity = DateTime.UtcNow;
+            StampConnectionState(request);
             return request;
         }
 
@@ -476,9 +478,28 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
     private HttpRequest BeginRequest()
     {
         _request.Reset();
-        _request.RemoteIpAddress = RemoteIpAddress;
-        _request.RemoteIpAddressText = RemoteIpAddressText;
         return _request;
+    }
+
+    /// <summary>
+    /// Applies the facts that belong to the connection rather than to the text of the request.
+    /// </summary>
+    /// <remarks>
+    /// Called after a successful parse rather than before it. A request can arrive across any
+    /// number of reads, so <see cref="HttpRequestParser.TryParseRequest"/> resets the request at
+    /// the top of every attempt to start each one from a clean slate. Anything stamped before
+    /// the parse is therefore cleared by it, which is how the peer address came to be null on
+    /// every HTTP/1.1 request and how the scheme came to read as plaintext over TLS.
+    ///
+    /// Whether the request arrived over TLS is a property of the connection, so HTTP/1.1 has
+    /// nowhere else to learn it from; HTTP/2 and HTTP/3 read it off the :scheme pseudo-header
+    /// instead (RFC 9113 §8.3.1).
+    /// </remarks>
+    private void StampConnectionState(HttpRequest request)
+    {
+        request.RemoteIpAddress = RemoteIpAddress;
+        request.RemoteIpAddressText = RemoteIpAddressText;
+        request.IsHttps = _isSecure;
     }
 
     /// <summary>
