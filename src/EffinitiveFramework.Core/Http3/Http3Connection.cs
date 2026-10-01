@@ -201,16 +201,19 @@ public sealed class Http3Connection : IAsyncDisposable
     {
         try
         {
-            // Read frames from the stream
-            var headers = await ReadHeadersAsync(stream, cancellationToken);
+            // One buffered reader for the whole stream, so the frame headers and the field
+            // section come out of a single read rather than one read per field.
+            using var reader = new Http3FrameReader(stream);
+
+            var headers = await ReadHeadersAsync(reader, cancellationToken);
             if (headers == null)
                 return;
 
             // Read body if present
             byte[] body = Array.Empty<byte>();
-            if (!stream.ReadsClosed.IsCompleted)
+            if (reader.HasBuffered || !stream.ReadsClosed.IsCompleted)
             {
-                body = await ReadBodyAsync(stream, cancellationToken);
+                body = await ReadBodyAsync(reader, cancellationToken);
             }
 
             // Convert to HTTP request
@@ -260,82 +263,75 @@ public sealed class Http3Connection : IAsyncDisposable
     }
 
     private async Task<List<(string name, string value)>?> ReadHeadersAsync(
-        QuicStream stream, CancellationToken cancellationToken)
+        Http3FrameReader reader, CancellationToken cancellationToken)
     {
         // Read frame type (variable-length integer)
-        var frameType = await ReadVariableIntAsync(stream, cancellationToken);
+        var frameType = await reader.ReadVariableIntAsync(cancellationToken);
         if (frameType != FrameTypeHeaders)
             return null;
 
         // Read frame length
-        var frameLength = await ReadVariableIntAsync(stream, cancellationToken);
+        var frameLength = await reader.ReadVariableIntAsync(cancellationToken);
         if (frameLength <= 0 || frameLength > 65536)
             return null;
 
-        // Read header block
-        var headerBlock = ArrayPool<byte>.Shared.Rent((int)frameLength);
+        // Decoded straight out of the buffer: the field section is almost always already there,
+        // having arrived in the same read as the frame header.
+        if (!await reader.EnsureAsync((int)frameLength, cancellationToken))
+            return null;
+
         try
         {
-            await stream.ReadExactlyAsync(headerBlock.AsMemory(0, (int)frameLength), cancellationToken);
-            return _qpackDecoder.Decode(headerBlock.AsSpan(0, (int)frameLength));
+            return _qpackDecoder.Decode(reader.Peek((int)frameLength));
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(headerBlock);
+            reader.Advance((int)frameLength);
         }
     }
 
-    private static async Task<byte[]> ReadBodyAsync(QuicStream stream, CancellationToken cancellationToken)
+    /// <summary>
+    /// Reads the request content, which arrives as DATA frames (RFC 9114 §7.2.1).
+    /// </summary>
+    /// <remarks>
+    /// Takes the same buffered reader the field section came from, so content that arrived in
+    /// that first read is already in hand and costs no further wait.
+    /// </remarks>
+    private static async Task<byte[]> ReadBodyAsync(Http3FrameReader reader, CancellationToken cancellationToken)
     {
-        // Fast path: FIN already signaled (common for GET requests)
-        if (stream.ReadsClosed.IsCompleted)
-            return Array.Empty<byte>();
+        MemoryStream? content = null;
 
-        using var ms = new MemoryStream();
-        var buffer = ArrayPool<byte>.Shared.Rent(16384);
-        try
+        while (true)
         {
-            while (!stream.ReadsClosed.IsCompleted)
+            long frameType;
+            try { frameType = await reader.ReadVariableIntAsync(cancellationToken); }
+            catch { break; }
+
+            if (frameType < 0)
+                break;
+
+            var frameLength = await reader.ReadVariableIntAsync(cancellationToken);
+            if (frameLength < 0)
+                break;
+
+            if (frameLength > 0)
             {
-                // Read frame type
-                long frameType;
-                try { frameType = await ReadVariableIntAsync(stream, cancellationToken); }
-                catch { break; }
+                if (!await reader.EnsureAsync((int)frameLength, cancellationToken))
+                    break;
 
-                var frameLength = await ReadVariableIntAsync(stream, cancellationToken);
+                if (frameType == FrameTypeData)
+                {
+                    content ??= new MemoryStream((int)frameLength);
+                    content.Write(reader.Peek((int)frameLength));
+                }
 
-                if (frameType == FrameTypeData && frameLength > 0)
-                {
-                    var remaining = (int)frameLength;
-                    while (remaining > 0)
-                    {
-                        var toRead = Math.Min(remaining, buffer.Length);
-                        var read = await stream.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
-                        if (read == 0) break;
-                        ms.Write(buffer, 0, read);
-                        remaining -= read;
-                    }
-                }
-                else
-                {
-                    // Skip non-DATA frames
-                    var remaining = (int)frameLength;
-                    while (remaining > 0)
-                    {
-                        var toRead = Math.Min(remaining, buffer.Length);
-                        var read = await stream.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
-                        if (read == 0) break;
-                        remaining -= read;
-                    }
-                    break; // After headers+data, we're done reading
-                }
+                // Frame types that are not DATA are skipped rather than rejected: RFC 9114 §9
+                // reserves unknown frame types for extension and requires a receiver to ignore them.
+                reader.Advance((int)frameLength);
             }
         }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-        return ms.Length == 0 ? Array.Empty<byte>() : ms.ToArray();
+
+        return content == null ? Array.Empty<byte>() : content.ToArray();
     }
 
     private async Task SendResponseAsync(QuicStream stream, HttpResponse response, CancellationToken cancellationToken)
