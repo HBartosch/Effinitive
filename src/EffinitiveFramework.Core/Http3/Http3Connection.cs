@@ -216,7 +216,8 @@ public sealed class Http3Connection : IAsyncDisposable
             }
 
             // Convert to HTTP request
-            var request = Http2RequestConverter.ConvertToHttp1Request(headers, body, _remoteIpAddress);
+            var request = Http2RequestConverter.ConvertToHttp1Request(
+                headers, body, _remoteIpAddress, Http.HttpVersions.Http30);
             request.RemoteIpAddressText = _remoteIpText;
 
             // Process request
@@ -352,7 +353,7 @@ public sealed class Http3Connection : IAsyncDisposable
             headerList.Add(("content-length", bodyLength.ToString()));
         if (response.Headers != null)
             foreach (var h in response.Headers)
-                headerList.Add((h.Key.ToLowerInvariant(), h.Value));
+                headerList.Add((WellKnownTokens.Lowercase(h.Key), h.Value));
 
         // Single WriteAsync per response: HEADERS frame + optional DATA frame batched into one buffer.
         // Previously 4 separate WriteAsync calls; each QUIC stream write acquires the send lock.

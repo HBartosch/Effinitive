@@ -85,6 +85,12 @@ public static class HttpVersions
 {
     public const string Http10 = "HTTP/1.0";
     public const string Http11 = "HTTP/1.1";
+
+    // HTTP/2 and HTTP/3 carry no version in the request: the protocol is settled by ALPN or by
+    // prior knowledge before any request is sent (RFC 9113 3.3, RFC 9114 3.1). These are what a
+    // request from those protocols reports, so an application can tell them apart.
+    public const string Http20 = "HTTP/2.0";
+    public const string Http30 = "HTTP/3.0";
 }
 
 public static class HttpMethods

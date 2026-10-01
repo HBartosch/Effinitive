@@ -151,4 +151,35 @@ internal static class WellKnownTokens
 
         return true;
     }
+
+    /// <summary>
+    /// The lowercase form of a field name, for the protocols that require it on the wire.
+    /// </summary>
+    /// <remarks>
+    /// HTTP/2 and HTTP/3 carry field names in lowercase (RFC 9113 §8.2.1, RFC 9114 §4.1.2), while a
+    /// response holds them in canonical case, so each one would otherwise be lowercased on its way
+    /// out and allocate a string per field per response. The names a server sets come from a known
+    /// set, so the mapping is made once at startup and the allocation only remains for a name the
+    /// application invented.
+    /// </remarks>
+    public static string Lowercase(string name)
+        => LowercaseNames.TryGetValue(name, out var lower) ? lower : name.ToLowerInvariant();
+
+    private static readonly Dictionary<string, string> LowercaseNames = BuildLowercaseNames();
+
+    private static Dictionary<string, string> BuildLowercaseNames()
+    {
+        // Ordinal rather than case-insensitive: the point is to map a specific spelling to its
+        // lowercase form, and a case-insensitive map would return the wrong casing's entry.
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var field in typeof(HeaderNames).GetFields(
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+        {
+            if (field.GetValue(null) is string name)
+                map[name] = name.ToLowerInvariant();
+        }
+
+        return map;
+    }
 }

@@ -107,6 +107,30 @@ public class WellKnownTokenTests
         Assert.Equal("localhost", request.Headers[HeaderNames.Host]);
     }
 
+    // HTTP/2 and HTTP/3 carry field names in lowercase (RFC 9113 §8.2.1, RFC 9114 §4.1.2).
+    [Theory]
+    [InlineData("Host", "host")]
+    [InlineData("Content-Type", "content-type")]
+    [InlineData("Sec-WebSocket-Key", "sec-websocket-key")]
+    [InlineData("X-RateLimit-Remaining", "x-ratelimit-remaining")]
+    public void AKnownFieldNameMapsToItsLowercaseForm(string canonical, string expected)
+    {
+        Assert.Equal(expected, WellKnownTokens.Lowercase(canonical));
+    }
+
+    [Fact]
+    public void AKnownFieldNameReturnsTheSameInstanceEveryTime()
+    {
+        Assert.Same(WellKnownTokens.Lowercase(HeaderNames.ContentType),
+                    WellKnownTokens.Lowercase(HeaderNames.ContentType));
+    }
+
+    [Fact]
+    public void AnUnknownFieldNameIsStillLowercased()
+    {
+        Assert.Equal("x-invented-by-the-app", WellKnownTokens.Lowercase("X-Invented-By-The-App"));
+    }
+
     private static string KeyOf(HttpRequest request, string name)
     {
         foreach (var key in request.Headers.Keys)
