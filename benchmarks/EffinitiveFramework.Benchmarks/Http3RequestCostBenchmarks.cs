@@ -25,7 +25,7 @@ public class Http3RequestCostBenchmarks
     private byte[] _body = null!;
     private IPAddress _peer = null!;
     private HttpResponse _response = null!;
-    private QpackEncoder _encoder = null!;
+    private byte[] _encodeBuffer = null!;
     private List<(string name, string value)> _responseHeaders = null!;
 
     [GlobalSetup]
@@ -43,7 +43,7 @@ public class Http3RequestCostBenchmarks
 
         _body = Array.Empty<byte>();
         _peer = IPAddress.Parse("127.0.0.1");
-        _encoder = new QpackEncoder();
+        _encodeBuffer = new byte[512];
 
         _response = new HttpResponse
         {
@@ -92,7 +92,11 @@ public class Http3RequestCostBenchmarks
 
     /// <summary>QPACK encoding of that field list.</summary>
     [Benchmark]
-    public byte[] EncodeHeaders() => _encoder.Encode(_responseHeaders);
+    public int EncodeHeaders()
+    {
+        QpackEncoder.TryEncode(_responseHeaders, _encodeBuffer, out var written);
+        return written;
+    }
 
     /// <summary>A fresh response object, which the HTTP/3 handler allocates per request.</summary>
     [Benchmark]
@@ -100,12 +104,13 @@ public class Http3RequestCostBenchmarks
 
     /// <summary>Everything above, which is one request's worth of our own work.</summary>
     [Benchmark(Baseline = true)]
-    public byte[] Whole()
+    public int Whole()
     {
         var request = Http2RequestConverter.ConvertToHttp1Request(_requestHeaders, _body, _peer);
         var response = new HttpResponse { StatusCode = 200, ContentType = "application/json" };
         _ = request.Path;
         var list = BuildResponseHeaders();
-        return _encoder.Encode(list);
+        QpackEncoder.TryEncode(list, _encodeBuffer, out var written);
+        return written;
     }
 }

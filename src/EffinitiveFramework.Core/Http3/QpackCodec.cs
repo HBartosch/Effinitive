@@ -56,12 +56,9 @@ internal sealed class QpackDecoder
             }
             else if ((b & 0xE0) == 0x20)
             {
-                // Literal Field Line With Literal Name (RFC 9204 §4.5.6): 001 N name value
-                offset++; // skip pattern byte — N bit is in bit 4
-                var nameLen = DecodeInteger(headerBlock, ref offset, 3);
-                // Actually, re-read: pattern is 001N HLEN, let me redo this
-                // Back up and parse correctly
-                offset--;
+                // Literal Field Line With Literal Name (RFC 9204 §4.5.6): 001 N H name-length.
+                // DecodeLiteralName reads the pattern byte itself, because the H bit and the
+                // length share it, so offset must still be on that byte when it is called.
                 var name = DecodeLiteralName(headerBlock, ref offset);
                 var value = DecodeString(headerBlock, ref offset);
                 headers.Add((name, value));
@@ -171,85 +168,88 @@ internal sealed class QpackEncoder
         }
     }
 
-    public byte[] Encode(List<(string name, string value)> headers)
+    /// <summary>
+    /// Encodes a field section into <paramref name="destination"/>, returning false if it does
+    /// not fit, in which case nothing has been written and the caller should retry with more room.
+    /// </summary>
+    /// <remarks>
+    /// Written into a span the caller owns rather than returned as a fresh array. Building this
+    /// through a MemoryStream cost the stream, its buffer, a byte array for every field name and
+    /// every field value, and a final copy out: about a dozen allocations for a response carrying
+    /// five fields. Encoding ASCII straight into the destination costs none of them.
+    /// </remarks>
+    public static bool TryEncode(List<(string name, string value)> headers, Span<byte> destination, out int written)
     {
-        using var ms = new MemoryStream(256);
+        written = 0;
 
-        // Header Block Prefix: Required Insert Count = 0, Delta Base = 0
-        ms.WriteByte(0x00); // Required Insert Count = 0
-        ms.WriteByte(0x00); // Sign=0, Delta Base = 0
+        // Field Section Prefix: Required Insert Count = 0, Delta Base = 0 (RFC 9204 §4.5.1).
+        // Both zero because only the static table is used, so no dynamic entries are referenced.
+        if (!TryWriteByte(destination, ref written, 0x00)) return false;
+        if (!TryWriteByte(destination, ref written, 0x00)) return false;
 
         foreach (var (name, value) in headers)
         {
             if (_fullMatch.TryGetValue((name, value), out var fullIdx))
             {
                 // Indexed Field Line (static): 1 T=1 index
-                EncodeIndexed(ms, fullIdx);
+                if (!TryWriteInteger(destination, ref written, fullIdx, 6, 0xC0)) return false;
             }
             else if (_nameMatch.TryGetValue(name, out var nameIdx))
             {
-                // Literal Field Line With Name Reference (static): 01 N=0 T=1 index + value
-                EncodeLiteralWithNameRef(ms, nameIdx, value);
+                // Literal Field Line With Name Reference (static): 01 N=0 T=1 index
+                if (!TryWriteInteger(destination, ref written, nameIdx, 4, 0x50)) return false;
+                if (!TryWriteString(destination, ref written, value)) return false;
             }
             else
             {
-                // Literal Field Line With Literal Name
-                EncodeLiteralWithLiteralName(ms, name, value);
+                // Literal Field Line With Literal Name: 0010 H LLL
+                if (!TryWriteInteger(destination, ref written, name.Length, 3, 0x20)) return false;
+                if (!TryWriteAscii(destination, ref written, name)) return false;
+                if (!TryWriteString(destination, ref written, value)) return false;
             }
         }
 
-        return ms.ToArray();
+        return true;
     }
 
-    private static void EncodeIndexed(MemoryStream ms, int index)
+    private static bool TryWriteByte(Span<byte> destination, ref int written, byte value)
     {
-        // Pattern: 1 1 index (6-bit prefix) — T=1 for static
-        EncodeInteger(ms, index, 6, 0xC0);
+        if (written >= destination.Length) return false;
+        destination[written++] = value;
+        return true;
     }
 
-    private static void EncodeLiteralWithNameRef(MemoryStream ms, int nameIndex, string value)
+    /// <summary>Writes a string with H=0 and a 7-bit length prefix.</summary>
+    private static bool TryWriteString(Span<byte> destination, ref int written, string value)
     {
-        // Pattern: 01 N=0 T=1 index (4-bit prefix)
-        EncodeInteger(ms, nameIndex, 4, 0x50);
-        // Value: H=0 length (7-bit prefix) + literal
-        EncodeString(ms, value);
+        if (!TryWriteInteger(destination, ref written, value.Length, 7, 0x00)) return false;
+        return TryWriteAscii(destination, ref written, value);
     }
 
-    private static void EncodeLiteralWithLiteralName(MemoryStream ms, string name, string value)
+    private static bool TryWriteAscii(Span<byte> destination, ref int written, string value)
     {
-        // Pattern: 001 N=0 (then H + name length with 3-bit prefix)
-        // First byte: 0010 H LLL
-        var nameBytes = Encoding.ASCII.GetBytes(name);
-        EncodeInteger(ms, nameBytes.Length, 3, 0x20);
-        ms.Write(nameBytes);
-        EncodeString(ms, value);
+        // One ASCII byte per char, so the character count is the byte count and the room needed
+        // is known without encoding first.
+        if (destination.Length - written < value.Length) return false;
+        written += System.Text.Encoding.ASCII.GetBytes(value, destination[written..]);
+        return true;
     }
 
-    private static void EncodeString(MemoryStream ms, string value)
-    {
-        // H=0 (no Huffman), length (7-bit prefix)
-        var bytes = Encoding.ASCII.GetBytes(value);
-        EncodeInteger(ms, bytes.Length, 7, 0x00);
-        ms.Write(bytes);
-    }
-
-    private static void EncodeInteger(MemoryStream ms, int value, int prefixBits, byte pattern)
+    private static bool TryWriteInteger(Span<byte> destination, ref int written, int value, int prefixBits, byte pattern)
     {
         var mask = (1 << prefixBits) - 1;
         if (value < mask)
+            return TryWriteByte(destination, ref written, (byte)(pattern | value));
+
+        if (!TryWriteByte(destination, ref written, (byte)(pattern | mask))) return false;
+
+        value -= mask;
+        while (value >= 128)
         {
-            ms.WriteByte((byte)(pattern | value));
+            if (!TryWriteByte(destination, ref written, (byte)(0x80 | (value & 0x7F)))) return false;
+            value >>= 7;
         }
-        else
-        {
-            ms.WriteByte((byte)(pattern | mask));
-            value -= mask;
-            while (value >= 128)
-            {
-                ms.WriteByte((byte)(0x80 | (value & 0x7F)));
-                value >>= 7;
-            }
-            ms.WriteByte((byte)value);
-        }
+
+        return TryWriteByte(destination, ref written, (byte)value);
     }
 }

@@ -17,7 +17,6 @@ public sealed class Http3Connection : IAsyncDisposable
     private readonly QuicConnection _quicConnection;
     private readonly Func<HttpRequest, Task<HttpResponse>>? _requestHandler;
     private readonly QpackDecoder _qpackDecoder = new();
-    private readonly QpackEncoder _qpackEncoder = new();
     private readonly List<QuicStream> _uniStreams = new();
 
     // Critical streams tracked by type (like Kestrel)
@@ -355,11 +354,20 @@ public sealed class Http3Connection : IAsyncDisposable
             foreach (var h in response.Headers)
                 headerList.Add((h.Key.ToLowerInvariant(), h.Value));
 
-        var encodedHeaders = _qpackEncoder.Encode(headerList);
+        // Encoded into a rented buffer, doubling until it fits. A response field section is a few
+        // dozen bytes, so the first size is almost always enough and the loop never runs twice.
+        var headerBuffer = ArrayPool<byte>.Shared.Rent(512);
+        int encodedLength;
+        while (!QpackEncoder.TryEncode(headerList, headerBuffer, out encodedLength))
+        {
+            var larger = ArrayPool<byte>.Shared.Rent(headerBuffer.Length * 2);
+            ArrayPool<byte>.Shared.Return(headerBuffer);
+            headerBuffer = larger;
+        }
 
         // Single WriteAsync per response: HEADERS frame + optional DATA frame batched into one buffer.
         // Previously 4 separate WriteAsync calls; each QUIC stream write acquires the send lock.
-        var buf = BuildResponseBuffer(encodedHeaders, body, bodyLength, out var totalSize);
+        var buf = BuildResponseBuffer(headerBuffer.AsSpan(0, encodedLength), body, bodyLength, out var totalSize);
         try
         {
             await stream.WriteAsync(buf.AsMemory(0, totalSize), cancellationToken);
@@ -367,13 +375,14 @@ public sealed class Http3Connection : IAsyncDisposable
         finally
         {
             ArrayPool<byte>.Shared.Return(buf);
+            ArrayPool<byte>.Shared.Return(headerBuffer);
         }
 
         stream.CompleteWrites();
     }
 
     // Non-async so stackalloc is valid (no await boundary).
-    private static byte[] BuildResponseBuffer(byte[] encodedHeaders, byte[]? body, int bodyLength, out int totalSize)
+    private static byte[] BuildResponseBuffer(ReadOnlySpan<byte> encodedHeaders, byte[]? body, int bodyLength, out int totalSize)
     {
         Span<byte> hdrPrefix = stackalloc byte[16];
         int hp = WriteVariableInt(hdrPrefix, FrameTypeHeaders);
