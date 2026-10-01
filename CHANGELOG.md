@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-01
+
+### Security
+- **Rate limiting counted every client against a single shared allowance.** `HttpRequest.RemoteIpAddress`
+  was null on every HTTP/1.1 request, plaintext and TLS alike, so `RateLimiter.ResolvePartitionKey` fell
+  through to its last branch and returned `"unknown"` for every caller. One noisy client could therefore
+  exhaust the limit for all of them. `X-Forwarded-For` never applied either, because the trusted-proxy
+  check is only consulted when the peer address is known. Present since rate limiting shipped in 2.5.0.
+  The cause was ordering: the peer address was written onto the request before it was parsed, and
+  `HttpRequestParser.TryParseRequest` resets the request at the top of every attempt, because a request
+  can arrive across any number of reads and each attempt has to start from a clean slate. The connection's
+  facts are now applied after a successful parse. The existing rate limiting tests did not catch this
+  because they build an `HttpRequest` directly and set the address on it, exercising the limiter but never
+  the wiring that fills it in.
+
+### Fixed
+- **304 and HEAD responses sent content.** A response can hold its content as a byte array, a stream, an
+  object still to be serialized, or a stream handler, and both places that suppress content cleared only
+  the array. An endpoint returning an object had it serialized and sent anyway. RFC 9110 §15.4.5 forbids
+  content on a 304 and §9.3.2 forbids it on a response to HEAD, but the framing was the worse half:
+  neither response carries a length, so both are terminated by the empty line after their fields, and the
+  content that followed was read by the peer as the start of the next response. Every exchange after it on
+  that connection was misaligned. `HttpResponse.ClearBody()` now drops all four.
+- **HTTP/3 corrupted any header name outside the QPACK static table.** The decoder's literal-name branch
+  advanced past the pattern byte, called `DecodeInteger`, which advanced again, then backed up once, so
+  decoding began on the length byte and read it as the pattern. RFC 9204 §4.5.6 puts the Huffman flag and
+  the name length in that byte, so both were wrong and every field after it in the section was misaligned.
+  A client sending an API key or a correlation id over HTTP/3 had it silently mangled. The codec had no
+  tests; it now has eight.
+- **`HttpRequest.IsHttps` was always false on HTTP/1.1**, including over TLS. Whether a request arrived
+  over TLS is a property of the connection, so HTTP/1.1 has nowhere else to learn it from; HTTP/2 and
+  HTTP/3 read it from the `:scheme` pseudo-header instead (RFC 9113 §8.3.1). Same cause as the rate
+  limiting defect above, fixed with it.
+
+### Changed
+- **A connection now parses all of its requests into one `HttpRequest`.** The response object was already
+  reused this way. A connection serves its requests one after another, so only one is ever live on it.
+  **This changes a contract:** a reference kept past the end of a handler will be seen to change, and then
+  to be reused by the next request on that connection, or by a different peer once the connection returns
+  to the pool. Copy what is needed and pass that, rather than passing the request itself into background
+  work. ASP.NET Core carries the same hazard with `HttpContext` and answers it the same way, in writing.
+  Worth 560 bytes of the 944 the handled path allocated.
+- **HTTP/2 advertises less to a single peer.** `SETTINGS_MAX_CONCURRENT_STREAMS` drops from 256 to 100 and
+  `SETTINGS_INITIAL_WINDOW_SIZE` from 1 MB to 96 KB, both matching what Kestrel advertises. These are
+  undertakings made per connection, so their product is the memory one peer can oblige the server to hold
+  and it multiplies by the connection count: 256 streams at a 1 MB window was an undertaking to buffer
+  256 MB for any one peer that asked. It is now under 32 MB, and a test asserts that bound.
+- **HTTP/3 states its stream limit** on the listener options at the same 100, rather than leaving it to a
+  default and duplicating it with a semaphore that could never block.
+- **Header field names are stored in canonical case.** Field names are case-insensitive (RFC 9110 §5.1),
+  so a client sending `HOST` now stores `Host`. No lookup changes, because the request header dictionary
+  already compared its keys with `OrdinalIgnoreCase`. Go's `net/textproto` canonicalises the same way.
+- **HTTP/1.1 allocates roughly a third less per request**, 1,452 bytes down to about 1,030 end to end over
+  a socket. The method, the HTTP version and every known field name are now matched against the constants
+  the server already holds rather than decoded into fresh strings; the entity tag is built in one
+  allocation rather than four; and the route table's span-keyed lookups are built once by `Freeze()`
+  rather than per request, which takes 26% off the exact-match lookup every request performs.
+- **HTTP/3 throughput is about 1.6x higher.** Measured on a 32-core host with the server pinned to 16
+  cores and the load generator to the other 16, running the arena's own h2load profile at 64 connections
+  and 64 streams: 158,621 req/s to 253,800. Every request had been making three to five separate reads
+  from the stream before it was parsed at all, because a variable-length integer (RFC 9000 §16) needs its
+  first byte before its length is known. Frames are now read through a buffer, and the response field
+  section is encoded into stack space rather than through a `MemoryStream`.
+- **A cleartext WebSocket takes the connection's own pipes** rather than wrapping them in a `Stream` and
+  building a second pipe over that, which cost a copy each way and an extra flush per message. The frame
+  parser also moved out of the receive state machine, since a local live across an `await` becomes a field
+  on that machine and is boxed on every suspension.
+- Stale documentation removed, build artefacts untracked, and nineteen scripts moved out of the repository
+  root into `scripts/`. The package description no longer carries performance claims measured on .NET
+  8.0.15 against a framework that now targets .NET 10.
+
+
 ## [2.6.0] - 2026-09-01
 
 ### Added

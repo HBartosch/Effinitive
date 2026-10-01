@@ -429,6 +429,19 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - **Struct Types** - Value types for small, frequently-used data
 - **Unsafe Code** - Low-level optimizations where beneficial
 
+## 🆕 What's New in v2.7.0
+
+| Change | Details |
+|---|---|
+| Rate limiting counted every client as one | `HttpRequest.RemoteIpAddress` was null on every HTTP/1.1 request, so the limiter's partition key was `"unknown"` for all callers and one noisy client could exhaust everyone's allowance. `X-Forwarded-For` never applied either. Present since 2.5.0. |
+| 304 and HEAD no longer send content | Both paths cleared only one of the four ways a response can hold content, so an endpoint returning an object had it sent anyway. Since neither response carries a length, the peer read that content as the start of the next one and the connection desynchronised. |
+| HTTP/3 field names | The QPACK decoder began reading one byte late, corrupting any header name outside the static table and every field after it. The codec now has tests. |
+| Requests are reused per connection | **Behaviour change.** A connection parses all of its requests into one `HttpRequest`, as it already did for responses. A reference kept past the end of a handler will be seen to change. Copy what you need rather than passing the request into background work. |
+| HTTP/2 advertises less per peer | `SETTINGS_MAX_CONCURRENT_STREAMS` 256 → 100 and `SETTINGS_INITIAL_WINDOW_SIZE` 1 MB → 96 KB, matching Kestrel. One peer's exposure drops from 256 MB per connection to under 32 MB. |
+| Less work per request | HTTP/1.1 allocates about a third less, 1,452 → 1,030 bytes end to end. HTTP/3 throughput is about 1.6x higher, 158,621 → 253,800 req/s on sixteen pinned cores. |
+
+See [CHANGELOG.md](CHANGELOG.md).
+
 ## 🆕 What's New in v2.6.0
 
 | Feature | Details |
