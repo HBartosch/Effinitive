@@ -110,34 +110,5 @@ internal sealed class Http3FrameReader : IDisposable
         _buffer = larger;
     }
 
-    /// <summary>
-    /// Reads to the end of the stream, so that closing it is graceful rather than an abort.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// QuicStream.DisposeAsync aborts the read side if it has not completed, which puts a
-    /// STOP_SENDING frame on the wire and makes the close wait on the peer acknowledging it. The
-    /// receive side only completes on a read that reaches the end, so a reader that stops as soon
-    /// as it has the bytes it wanted leaves every stream to be torn down the expensive way.
-    /// </para>
-    /// <para>
-    /// Only attempted once the peer has finished sending, so the read returns at once and nothing
-    /// waits on a client that has more to say. A stream abandoned mid-request is still aborted,
-    /// which is what abandoning it means.
-    /// </para>
-    /// </remarks>
-    public async ValueTask DrainToEndAsync(CancellationToken cancellationToken)
-    {
-        if (!_stream.ReadsClosed.IsCompletedSuccessfully)
-            return;
-
-        _start = 0;
-        _end = 0;
-
-        while (await _stream.ReadAsync(_buffer, cancellationToken) > 0)
-        {
-        }
-    }
-
     public void Dispose() => ArrayPool<byte>.Shared.Return(_buffer);
 }

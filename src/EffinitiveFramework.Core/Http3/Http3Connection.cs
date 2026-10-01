@@ -238,10 +238,6 @@ public sealed class Http3Connection : IAsyncDisposable
 
             // Send response
             await SendResponseAsync(stream, response, cancellationToken);
-
-            // Read off whatever the peer still has queued so the close below is graceful.
-            // See Http3FrameReader.DrainToEndAsync for why that matters.
-            await reader.DrainToEndAsync(cancellationToken);
         }
         catch (QuicException)
         {
