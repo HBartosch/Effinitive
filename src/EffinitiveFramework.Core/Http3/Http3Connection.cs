@@ -350,14 +350,16 @@ public sealed class Http3Connection : IAsyncDisposable
         var buf = BuildResponseBuffer(response, body, bodyLength, out var totalSize);
         try
         {
-            await stream.WriteAsync(buf.AsMemory(0, totalSize), cancellationToken);
+            // The end-of-stream flag rides with the data rather than following it. Both say the
+            // same thing to the peer, but CompleteWrites is a second call into the transport, a
+            // StreamShutdown, where this overload sets QUIC_SEND_FLAGS.FIN on the send already
+            // being made. One response, one trip through the connection's send path.
+            await stream.WriteAsync(buf.AsMemory(0, totalSize), completeWrites: true, cancellationToken);
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buf);
         }
-
-        stream.CompleteWrites();
     }
 
     /// <summary>
