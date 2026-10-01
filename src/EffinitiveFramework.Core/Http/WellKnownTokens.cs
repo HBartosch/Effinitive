@@ -182,4 +182,30 @@ internal static class WellKnownTokens
 
         return map;
     }
+
+    /// <summary>
+    /// The status code rendered as a string, for the codes a server actually sends.
+    /// </summary>
+    /// <remarks>
+    /// HTTP/2 and HTTP/3 carry the status as the value of a :status field, and matching it against
+    /// the QPACK or HPACK static table needs it as a string. Calling ToString on every response
+    /// allocates one each time, for a value drawn from a range small enough to hold outright.
+    /// </remarks>
+    public static string StatusCode(int code)
+    {
+        var index = code - 100;
+        return (uint)index < (uint)StatusStrings.Length ? StatusStrings[index] : code.ToString();
+    }
+
+    // 100 through 599, which covers every status class RFC 9110 §15 defines.
+    private static readonly string[] StatusStrings = BuildStatusStrings();
+
+    private static string[] BuildStatusStrings()
+    {
+        var strings = new string[500];
+        for (int i = 0; i < strings.Length; i++)
+            strings[i] = (i + 100).ToString();
+
+        return strings;
+    }
 }

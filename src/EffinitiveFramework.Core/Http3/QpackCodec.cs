@@ -212,6 +212,84 @@ internal sealed class QpackEncoder
         return true;
     }
 
+    /// <summary>
+    /// Encodes a response's field section directly, without building a list of pairs first.
+    /// </summary>
+    /// <remarks>
+    /// Assembling the fields into a List to hand here cost the list, a string for the status and
+    /// a string for the content length, every response. None of those outlive the encoding, and
+    /// none of them are needed: the status comes from a table the process already holds, and the
+    /// content length is written as digits straight into the destination.
+    /// </remarks>
+    public static bool TryEncodeResponse(
+        Http.HttpResponse response, int bodyLength, Span<byte> destination, out int written)
+    {
+        written = 0;
+
+        // Field Section Prefix: Required Insert Count = 0, Delta Base = 0 (RFC 9204 §4.5.1).
+        if (!TryWriteByte(destination, ref written, 0x00)) return false;
+        if (!TryWriteByte(destination, ref written, 0x00)) return false;
+
+        if (!TryWriteField(destination, ref written, ":status", Http.WellKnownTokens.StatusCode(response.StatusCode)))
+            return false;
+
+        if (!string.IsNullOrEmpty(response.ContentType)
+            && !TryWriteField(destination, ref written, "content-type", response.ContentType))
+            return false;
+
+        if (bodyLength > 0 && !TryWriteContentLength(destination, ref written, bodyLength))
+            return false;
+
+        if (response.Headers != null)
+        {
+            foreach (var header in response.Headers)
+            {
+                if (!TryWriteField(destination, ref written,
+                        Http.WellKnownTokens.Lowercase(header.Key), header.Value))
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryWriteField(Span<byte> destination, ref int written, string name, string value)
+    {
+        if (_fullMatch.TryGetValue((name, value), out var fullIdx))
+            return TryWriteInteger(destination, ref written, fullIdx, 6, 0xC0);
+
+        if (_nameMatch.TryGetValue(name, out var nameIdx))
+        {
+            return TryWriteInteger(destination, ref written, nameIdx, 4, 0x50)
+                && TryWriteString(destination, ref written, value);
+        }
+
+        return TryWriteInteger(destination, ref written, name.Length, 3, 0x20)
+            && TryWriteAscii(destination, ref written, name)
+            && TryWriteString(destination, ref written, value);
+    }
+
+    /// <summary>Writes content-length with its value formatted straight into the destination.</summary>
+    private static bool TryWriteContentLength(Span<byte> destination, ref int written, int bodyLength)
+    {
+        if (!_nameMatch.TryGetValue("content-length", out var nameIdx))
+            return false;
+
+        if (!TryWriteInteger(destination, ref written, nameIdx, 4, 0x50)) return false;
+
+        Span<char> digits = stackalloc char[11];
+        if (!bodyLength.TryFormat(digits, out var digitCount)) return false;
+
+        if (!TryWriteInteger(destination, ref written, digitCount, 7, 0x00)) return false;
+        if (destination.Length - written < digitCount) return false;
+
+        for (int i = 0; i < digitCount; i++)
+            destination[written + i] = (byte)digits[i];
+
+        written += digitCount;
+        return true;
+    }
+
     private static bool TryWriteByte(Span<byte> destination, ref int written, byte value)
     {
         if (written >= destination.Length) return false;

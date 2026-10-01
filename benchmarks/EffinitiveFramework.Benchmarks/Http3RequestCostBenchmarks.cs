@@ -85,7 +85,7 @@ public class Http3RequestCostBenchmarks
             headerList.Add(("content-length", bodyLength.ToString()));
         if (_response.Headers != null)
             foreach (var h in _response.Headers)
-                headerList.Add((h.Key.ToLowerInvariant(), h.Value));
+                headerList.Add((WellKnownTokens.Lowercase(h.Key), h.Value));
 
         return headerList;
     }

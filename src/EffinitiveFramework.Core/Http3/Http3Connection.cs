@@ -345,19 +345,9 @@ public sealed class Http3Connection : IAsyncDisposable
         var body = response.Body;
         var bodyLength = body?.Length ?? 0;
 
-        var headerList = new List<(string name, string value)>(6);
-        headerList.Add((":status", response.StatusCode.ToString()));
-        if (!string.IsNullOrEmpty(response.ContentType))
-            headerList.Add(("content-type", response.ContentType));
-        if (bodyLength > 0)
-            headerList.Add(("content-length", bodyLength.ToString()));
-        if (response.Headers != null)
-            foreach (var h in response.Headers)
-                headerList.Add((WellKnownTokens.Lowercase(h.Key), h.Value));
-
         // Single WriteAsync per response: HEADERS frame + optional DATA frame batched into one buffer.
         // Previously 4 separate WriteAsync calls; each QUIC stream write acquires the send lock.
-        var buf = BuildResponseBuffer(headerList, body, bodyLength, out var totalSize);
+        var buf = BuildResponseBuffer(response, body, bodyLength, out var totalSize);
         try
         {
             await stream.WriteAsync(buf.AsMemory(0, totalSize), cancellationToken);
@@ -381,14 +371,14 @@ public sealed class Http3Connection : IAsyncDisposable
     /// garbage did. Measured across five alternating runs it was about 4% down. Non-async so the
     /// stackalloc is valid, since there is no await boundary here.
     /// </remarks>
-    private static byte[] BuildResponseBuffer(List<(string name, string value)> headerList, byte[]? body, int bodyLength, out int totalSize)
+    private static byte[] BuildResponseBuffer(HttpResponse response, byte[]? body, int bodyLength, out int totalSize)
     {
         Span<byte> headerScratch = stackalloc byte[1024];
         byte[]? rentedHeaders = null;
         var encodedHeaders = headerScratch;
 
         int headerLength;
-        while (!QpackEncoder.TryEncode(headerList, encodedHeaders, out headerLength))
+        while (!QpackEncoder.TryEncodeResponse(response, bodyLength, encodedHeaders, out headerLength))
         {
             // Only for a response carrying unusually many or unusually long fields.
             var size = (rentedHeaders?.Length ?? headerScratch.Length) * 2;

@@ -96,6 +96,65 @@ public class QpackEncoderTests
             [("x-correlation-id", "7f3dacad-1fab-4c2e-9d10-0b1e2c3d4e5f")], tiny, out _));
     }
 
+    // The response overload skips the intermediate list, so it is encoded by different code and
+    // has to be checked separately rather than assumed equivalent.
+    [Fact]
+    public void AResponseEncodesTheSameFieldsAsTheListWould()
+    {
+        var response = new Core.Http.HttpResponse
+        {
+            StatusCode = 200,
+            ContentType = "application/json",
+        };
+        response.Headers["ETag"] = "\"e3b0c44298fc1c14\"";
+
+        var buffer = new byte[4096];
+        Assert.True(QpackEncoder.TryEncodeResponse(response, 42, buffer, out var written));
+
+        var decoded = new QpackDecoder().Decode(buffer.AsSpan(0, written));
+
+        Assert.Equal(
+        [
+            (":status", "200"),
+            ("content-type", "application/json"),
+            ("content-length", "42"),
+            ("etag", "\"e3b0c44298fc1c14\""),
+        ], decoded);
+    }
+
+    [Fact]
+    public void AResponseWithNoContentOmitsContentLength()
+    {
+        var response = new Core.Http.HttpResponse { StatusCode = 204, ContentType = "" };
+
+        var buffer = new byte[256];
+        Assert.True(QpackEncoder.TryEncodeResponse(response, 0, buffer, out var written));
+
+        var decoded = new QpackDecoder().Decode(buffer.AsSpan(0, written));
+
+        Assert.Equal([(":status", "204")], decoded);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(7)]
+    [InlineData(1024)]
+    [InlineData(1048576)]
+    public void ContentLengthIsWrittenCorrectlyAtAnyWidth(int bodyLength)
+    {
+        var response = new Core.Http.HttpResponse { StatusCode = 200, ContentType = "" };
+
+        var buffer = new byte[256];
+        Assert.True(QpackEncoder.TryEncodeResponse(response, bodyLength, buffer, out var written));
+
+        var decoded = new QpackDecoder().Decode(buffer.AsSpan(0, written));
+
+        if (bodyLength == 0)
+            Assert.DoesNotContain(decoded, f => f.name == "content-length");
+        else
+            Assert.Contains(("content-length", bodyLength.ToString()), decoded);
+    }
+
     [Fact]
     public void AnEmptyFieldSectionIsJustThePrefix()
     {
