@@ -96,13 +96,22 @@ public class Http2Connection : IAsyncDisposable
     /// <summary>
     /// Start processing the HTTP/2 connection
     /// </summary>
+    // How long the farewell may take to reach a peer that has stopped reading, matching what
+    // the writer below is already given to drain.
+    private static readonly TimeSpan GoAwayTimeout = TimeSpan.FromSeconds(2);
+
     public async Task ProcessAsync(CancellationToken cancellationToken = default)
     {
         // Single writer task: all frame writes are queued here so the frame-reading
         // loop is never blocked waiting to send a SETTINGS ACK or PING ACK while
         // response tasks are occupying the old write lock.
-        // Drain uses a cancellable token so the 2-second shutdown timeout can stop it.
-        using var drainCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Deliberately not linked to the caller's token. This writer is what puts the last
+        // frames on the wire, the GOAWAY below among them, and a graceful shutdown arrives as
+        // that token firing: linked, the writer stops at the exact moment it is needed, and the
+        // two seconds the finally then grants it have already gone. Responses still in the
+        // channel were being dropped that way, which a client sees as a truncated body. The
+        // finally owns the deadline instead, which is where the timeout was always meant to be.
+        using var drainCts = new CancellationTokenSource();
         var writerTask = DrainWriteChannelAsync(drainCts.Token);
 
         try
@@ -122,9 +131,19 @@ public class Http2Connection : IAsyncDisposable
 
             await ProcessFramesAsync(cancellationToken);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            try { await SendGoAwayAsync(Http2Constants.ErrorInternalError, cancellationToken); }
+            // Not the caller's token. A graceful shutdown arrives here as a cancellation, and
+            // handing the already-cancelled token to the send means the frame is never queued,
+            // so the peer never learns which streams were accepted. RFC 9113 §6.8 says a server
+            // shutting down gracefully SHOULD send GOAWAY, which it cannot do with a token that
+            // has already fired. Bounded, so a peer that stopped reading cannot hold us open.
+            using var farewell = new CancellationTokenSource(GoAwayTimeout);
+            var code = ex is OperationCanceledException
+                ? Http2Constants.ErrorNoError
+                : Http2Constants.ErrorInternalError;
+
+            try { await SendGoAwayAsync(code, farewell.Token); }
             catch { /* best effort */ }
         }
         finally

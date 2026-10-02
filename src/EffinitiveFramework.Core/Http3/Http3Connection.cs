@@ -40,6 +40,10 @@ public sealed class Http3Connection : IAsyncDisposable
     // HTTP/3 settings (RFC 9114 §7.2.4.1)
     private const long SettingsMaxFieldSectionSize = 0x06;
 
+    // How long the farewell may take to reach a peer that has stopped reading before the
+    // teardown gives up on it, matching what the TLS path allows its close_notify.
+    private static readonly TimeSpan GoAwayTimeout = TimeSpan.FromSeconds(2);
+
     // HTTP/3 error codes
     private const long H3NoError = 0x0100;
     private const long H3InternalError = 0x0102;
@@ -111,8 +115,13 @@ public sealed class Http3Connection : IAsyncDisposable
         catch (QuicException) { }
         finally
         {
-            // Send GOAWAY for graceful shutdown (RFC 9114 §5.2)
-            await SendGoAwayAsync(cancellationToken);
+            // Send GOAWAY for graceful shutdown (RFC 9114 §5.2). Deliberately not the token
+            // that brought us here: this runs *because* shutdown was requested, and handing an
+            // already-cancelled token to the write means the frame is never sent and the peer
+            // learns nothing about which requests were accepted. Saying goodbye has to outlive
+            // the thing that triggered it, bounded so a peer that stopped reading cannot hold
+            // the connection open.
+            await SendGoAwayAsync();
 
             // Clean up unidirectional streams — outbound control stream last
             // "Don't gracefully close the outbound control stream. If the peer
@@ -178,9 +187,11 @@ public sealed class Http3Connection : IAsyncDisposable
     /// Send GOAWAY frame on the outbound control stream (RFC 9114 §5.2).
     /// Uses the highest opened stream ID + 4, like Kestrel.
     /// </summary>
-    private async Task SendGoAwayAsync(CancellationToken cancellationToken)
+    private async Task SendGoAwayAsync()
     {
         if (_outboundControlStream == null) return;
+
+        using var timeout = new CancellationTokenSource(GoAwayTimeout);
 
         try
         {
@@ -191,7 +202,7 @@ public sealed class Http3Connection : IAsyncDisposable
             var payloadLen = WriteVariableInt(payload.AsSpan(), goawayId);
 
             await WriteFrameAsync(_outboundControlStream, FrameTypeGoaway,
-                payload.AsMemory(0, payloadLen), cancellationToken);
+                payload.AsMemory(0, payloadLen), timeout.Token);
         }
         catch { }
     }
