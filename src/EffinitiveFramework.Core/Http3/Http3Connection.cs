@@ -266,18 +266,18 @@ public sealed class Http3Connection : IAsyncDisposable
         Http3FrameReader reader, CancellationToken cancellationToken)
     {
         // Read frame type (variable-length integer)
-        var frameType = await reader.ReadVariableIntAsync(cancellationToken);
+        var frameType = await reader.ReadVariableIntAsync();
         if (frameType != FrameTypeHeaders)
             return null;
 
         // Read frame length
-        var frameLength = await reader.ReadVariableIntAsync(cancellationToken);
+        var frameLength = await reader.ReadVariableIntAsync();
         if (frameLength <= 0 || frameLength > 65536)
             return null;
 
         // Decoded straight out of the buffer: the field section is almost always already there,
         // having arrived in the same read as the frame header.
-        if (!await reader.EnsureAsync((int)frameLength, cancellationToken))
+        if (!await reader.EnsureAsync((int)frameLength))
             return null;
 
         try
@@ -304,19 +304,19 @@ public sealed class Http3Connection : IAsyncDisposable
         while (true)
         {
             long frameType;
-            try { frameType = await reader.ReadVariableIntAsync(cancellationToken); }
+            try { frameType = await reader.ReadVariableIntAsync(); }
             catch { break; }
 
             if (frameType < 0)
                 break;
 
-            var frameLength = await reader.ReadVariableIntAsync(cancellationToken);
+            var frameLength = await reader.ReadVariableIntAsync();
             if (frameLength < 0)
                 break;
 
             if (frameLength > 0)
             {
-                if (!await reader.EnsureAsync((int)frameLength, cancellationToken))
+                if (!await reader.EnsureAsync((int)frameLength))
                     break;
 
                 if (frameType == FrameTypeData)
@@ -354,7 +354,7 @@ public sealed class Http3Connection : IAsyncDisposable
             // same thing to the peer, but CompleteWrites is a second call into the transport, a
             // StreamShutdown, where this overload sets QUIC_SEND_FLAGS.FIN on the send already
             // being made. One response, one trip through the connection's send path.
-            await stream.WriteAsync(buf.AsMemory(0, totalSize), completeWrites: true, cancellationToken);
+            await stream.WriteAsync(buf.AsMemory(0, totalSize), completeWrites: true);
         }
         finally
         {

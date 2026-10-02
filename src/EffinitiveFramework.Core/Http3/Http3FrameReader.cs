@@ -43,7 +43,7 @@ internal sealed class Http3FrameReader : IDisposable
     /// <summary>
     /// Reads until at least <paramref name="count"/> bytes are available, or the peer stops sending.
     /// </summary>
-    public async ValueTask<bool> EnsureAsync(int count, CancellationToken cancellationToken)
+    public async ValueTask<bool> EnsureAsync(int count)
     {
         if (Buffered >= count)
             return true;
@@ -52,7 +52,12 @@ internal sealed class Http3FrameReader : IDisposable
 
         while (Buffered < count)
         {
-            int read = await _stream.ReadAsync(_buffer.AsMemory(_end, _buffer.Length - _end), cancellationToken);
+            // No cancellation token. Handing one to a QUIC read registers a callback on it and
+            // unregisters it again, and the token here belongs to the whole server, so every
+            // concurrent stream would contend on that one registration list. At a few thousand
+            // streams that contention is the cost, not the read. A shutdown still ends these:
+            // disposing the connection aborts its streams and the pending read throws.
+            int read = await _stream.ReadAsync(_buffer.AsMemory(_end, _buffer.Length - _end));
             if (read == 0)
                 return false;
 
@@ -65,15 +70,15 @@ internal sealed class Http3FrameReader : IDisposable
     /// <summary>
     /// Reads one variable-length integer (RFC 9000 §16), or -1 if the stream ended first.
     /// </summary>
-    public async ValueTask<long> ReadVariableIntAsync(CancellationToken cancellationToken)
+    public async ValueTask<long> ReadVariableIntAsync()
     {
-        if (!await EnsureAsync(1, cancellationToken))
+        if (!await EnsureAsync(1))
             return -1;
 
         // The top two bits give the encoded length, so the first byte has to be in hand before
         // the rest can be asked for. Having it buffered is what keeps that from being a second read.
         int length = 1 << (_buffer[_start] >> 6);
-        if (!await EnsureAsync(length, cancellationToken))
+        if (!await EnsureAsync(length))
             return -1;
 
         long value = _buffer[_start] & 0x3F;
