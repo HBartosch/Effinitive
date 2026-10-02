@@ -80,12 +80,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order flipped halfway, gave 244,051 against 231,345 req/s, positive in seven of ten but with a
   paired t of 1.24. That is not a result. Kept because one call is less work than two and is what
   Kestrel does, not because it was shown to be faster.
-- **HTTP/3 throughput is about 1.6x higher.** Measured on a 32-core host with the server pinned to 16
-  cores and the load generator to the other 16, running the arena's own h2load profile at 64 connections
-  and 64 streams: 158,621 req/s to 253,800. Every request had been making three to five separate reads
-  from the stream before it was parsed at all, because a variable-length integer (RFC 9000 §16) needs its
-  first byte before its length is known. Frames are now read through a buffer, and the response field
-  section is encoded into stack space rather than through a `MemoryStream`.
+- **HTTP/3 throughput is 2.9x what it was, and now ahead of Kestrel.** Measured on a 32-core host
+  with the server pinned to 16 cores and the load generator to the other 16, running the arena's
+  own h2load profile at 64 connections and 64 streams, alternating runs with the listening process
+  verified before each: 158,621 req/s at the start to 455,556. Kestrel's own arena entry on the
+  same host and the same load measures 323,335. Two changes account for nearly all of it.
+
+  Every request had been making three to five separate reads from the stream before it was parsed
+  at all, because a variable-length integer (RFC 9000 §16) needs its first byte before its length
+  is known. Each was a suspension the request waited on, which is why threads sat idle with cores
+  free. Frames now come through a buffer, which was worth 1.8x.
+
+  And every QUIC read and write was handed the server's shutdown token. Awaiting with a token
+  registers a callback on it and unregisters it afterwards, and that token is one object shared by
+  every stream on every connection, so thousands of concurrent streams were taking the same
+  registration lock twice per operation. A call tree built from the trace found it: 11% of all
+  time in `Thread.Sleep`, reached 94% from `CancellationTokenSource`, which is a thread sleeping
+  out a contended lock. Kestrel passes no token to its per-stream operations either, keeping one
+  only for accepting a stream and relying on aborting a stream to end anything outstanding.
+  Removing it was worth a further 1.97x, and shutdown still works the same way: disposing the
+  connection aborts its streams and the pending read throws.
 - **A cleartext WebSocket takes the connection's own pipes** rather than wrapping them in a `Stream` and
   building a second pipe over that, which cost a copy each way and an extra flush per message. The frame
   parser also moved out of the receive state machine, since a local live across an `await` becomes a field
