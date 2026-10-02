@@ -64,6 +64,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the server already holds rather than decoded into fresh strings; the entity tag is built in one
   allocation rather than four; and the route table's span-keyed lookups are built once by `Freeze()`
   rather than per request, which takes 26% off the exact-match lookup every request performs.
+- **HTTP/3 reported its version as `HTTP/2.0`.** Both protocols build their requests through the
+  same conversion, and neither carries a version on the wire, so the conversion states one and
+  stated the same for both. Nothing in the server was misled, since the only reader is the
+  HTTP/1.1 validation path, but an application inspecting `HttpRequest.HttpVersion` was.
+- **The HTTP/3 response path no longer builds a list or a string per field.** The field section is
+  encoded straight from the response: the status comes from a table the process already holds, the
+  content length is written as digits into the destination, and known field names map to their
+  lowercase form rather than being lowercased each time. Allocation per request fell from 4,583
+  bytes to 4,473. Throughput did not change, which is worth stating plainly: three separate
+  allocation reductions on this path moved it none, so HTTP/3 here is not allocation-bound.
+- **The end-of-stream flag is sent with the response rather than after it.** `CompleteWrites()` is
+  a second call into the transport where the `completeWrites` overload sets the FIN on the send
+  already being made; the runtime documents them as equivalent. Ten alternating pairs, with the
+  order flipped halfway, gave 244,051 against 231,345 req/s, positive in seven of ten but with a
+  paired t of 1.24. That is not a result. Kept because one call is less work than two and is what
+  Kestrel does, not because it was shown to be faster.
 - **HTTP/3 throughput is about 1.6x higher.** Measured on a 32-core host with the server pinned to 16
   cores and the load generator to the other 16, running the arena's own h2load profile at 64 connections
   and 64 streams: 158,621 req/s to 253,800. Every request had been making three to five separate reads
