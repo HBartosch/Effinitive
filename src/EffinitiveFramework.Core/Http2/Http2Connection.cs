@@ -28,6 +28,9 @@ public class Http2Connection : IAsyncDisposable
     private readonly Channel<PooledBuffer> _writeChannel =
         Channel.CreateUnbounded<PooledBuffer>(new UnboundedChannelOptions { SingleReader = true });
     private readonly StreamPriorityScheduler _priorityScheduler = new();
+
+    /// <summary>How many streams the dependency tree is holding. For tests.</summary>
+    internal int TrackedPriorityStreamCount => _priorityScheduler.TrackedStreamCount;
     private HpackDecoder _hpackDecoder;
     private readonly HpackEncoder _hpackEncoder = new();
     private readonly Func<HttpRequest, Task<HttpResponse>>? _requestHandler;
@@ -834,9 +837,15 @@ public class Http2Connection : IAsyncDisposable
         }
         finally
         {
-            // Always clean up the stream
+            // Always clean up the stream. The priority tree has to be told as well: a closed
+            // stream's node is dead weight that is never read again, and a long-lived
+            // connection opens a new stream per request, so leaving them behind grows the
+            // tree for as long as the connection lasts. RFC 9113 §5.3.4 expects a closed
+            // stream to leave the dependency tree, with its children reparented onto its
+            // parent, which is what RemoveStream does.
             stream.UpdateState(Http2StreamState.Closed);
             _streams.TryRemove(stream.StreamId, out _);
+            _priorityScheduler.RemoveStream(stream.StreamId);
         }
     }
     
@@ -1075,7 +1084,11 @@ public class Http2Connection : IAsyncDisposable
             // Unblock a response task parked on this stream's send window.
             stream.Abort();
         }
-        
+
+        // Unconditionally, because a stream can be registered in the priority tree and reset
+        // before it ever reaches _streams.
+        _priorityScheduler.RemoveStream(streamId);
+
         return Task.CompletedTask;
     }
     
