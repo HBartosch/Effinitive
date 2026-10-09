@@ -35,7 +35,8 @@ public class Http2Connection : IAsyncDisposable
     private readonly HpackEncoder _hpackEncoder = new();
     private readonly Func<HttpRequest, Task<HttpResponse>>? _requestHandler;
 
-    // Connection flow control synchronization
+    // Guards the connection window's waiter field only. The window counter itself is
+    // interlocked: see TryReserveConnectionWindow for why it is not a lock.
     private readonly object _windowLock = new();
     // Woken when the client grants more connection-level send window via WINDOW_UPDATE.
     private TaskCompletionSource<bool>? _connectionWindowWaiter;
@@ -255,13 +256,8 @@ public class Http2Connection : IAsyncDisposable
             if (responseBody.Length > pushedStream.WindowSize)
                 throw new InvalidOperationException($"Pushed data ({responseBody.Length} bytes) exceeds stream flow control window ({pushedStream.WindowSize} bytes)");
             
-            lock (_windowLock)
-            {
-                if (responseBody.Length > _connectionWindowSize)
-                    throw new InvalidOperationException($"Pushed data ({responseBody.Length} bytes) exceeds connection flow control window ({_connectionWindowSize} bytes)");
-                
-                _connectionWindowSize -= responseBody.Length;
-            }
+            if (!TryReserveConnectionWindow(responseBody.Length))
+                throw new InvalidOperationException($"Pushed data ({responseBody.Length} bytes) exceeds connection flow control window ({ConnectionWindowSize} bytes)");
             
             // Update stream flow control window
             pushedStream.UpdateWindowSize(-responseBody.Length);
@@ -854,54 +850,110 @@ public class Http2Connection : IAsyncDisposable
     /// awaiting a WINDOW_UPDATE on stream 0 when the window is exhausted. Returns the bytes
     /// reserved (always &gt;= 1 on success).
     /// </summary>
-    private async Task<int> AcquireConnectionWindowAsync(int desired, CancellationToken cancellationToken)
+    internal async Task<int> AcquireConnectionWindowAsync(int desired, CancellationToken cancellationToken)
     {
         while (true)
         {
+            int grant = TakeUpToAvailable(desired);
+            if (grant > 0)
+                return grant;
+
             TaskCompletionSource<bool> waiter;
             lock (_windowLock)
             {
-                if (_connectionWindowSize > 0)
-                {
-                    int grant = Math.Min(desired, _connectionWindowSize);
-                    _connectionWindowSize -= grant;
+                // Re-checked inside the lock, and this is what closes the lost-wakeup race: a
+                // release landing between the attempt above and here does not have to find a
+                // waiter to register, because this second attempt sees the credit it added.
+                // The opposite order is covered too, since a release reads the waiter field
+                // after its interlocked add, and this write happens before the lock is left.
+                grant = TakeUpToAvailable(desired);
+                if (grant > 0)
                     return grant;
-                }
+
                 waiter = _connectionWindowWaiter ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
             await waiter.Task.WaitAsync(cancellationToken);
         }
     }
 
-    private bool TryReserveConnectionWindow(int n)
+    /// <summary>
+    /// Take as much of <paramref name="desired"/> as the window holds, or nothing.
+    /// </summary>
+    /// <remarks>
+    /// A partial grant is right here rather than a refusal: RFC 9113 §6.9.1 has the sender
+    /// split its DATA to fit the window, so taking what is there and returning for the rest is
+    /// the intended behaviour.
+    /// </remarks>
+    private int TakeUpToAvailable(int desired)
     {
-        lock (_windowLock)
+        while (true)
         {
-            if (_connectionWindowSize < n)
-                return false;
-            _connectionWindowSize -= n;
-            return true;
+            int current = Volatile.Read(ref _connectionWindowSize);
+            if (current <= 0)
+                return 0;
+
+            int grant = Math.Min(desired, current);
+            if (Interlocked.CompareExchange(ref _connectionWindowSize, current - grant, current) == current)
+                return grant;
         }
     }
 
-    private void ReleaseConnectionWindow(int amount)
+    /// <summary>The connection-level send window, for tests and diagnostics.</summary>
+    internal int ConnectionWindowSize => Volatile.Read(ref _connectionWindowSize);
+
+    internal bool TryReserveConnectionWindow(int n)
+    {
+        // Compare-and-swap rather than a lock. The window is a single int, so a Monitor buys
+        // no atomicity an interlocked exchange does not, and it costs something a capture made
+        // plain: every response on a connection passes through here, so under load the losers
+        // park, the thread pool answers by injecting more threads, and those contend harder.
+        // At 1024 connections 186 of 356 threads were parked on this one lock while the server
+        // served nothing. A CAS loop never parks; a thread that loses the race re-reads.
+        while (true)
+        {
+            int current = Volatile.Read(ref _connectionWindowSize);
+            if (current < n)
+                return false;
+
+            if (Interlocked.CompareExchange(ref _connectionWindowSize, current - n, current) == current)
+                return true;
+        }
+    }
+
+    internal void ReleaseConnectionWindow(int amount)
     {
         if (amount <= 0) return;
+
+        if (Interlocked.Add(ref _connectionWindowSize, amount) > 0)
+            SignalConnectionWindowWaiter();
+    }
+
+    /// <summary>Wake a sender parked on the connection window, if there is one.</summary>
+    /// <remarks>
+    /// The peek is deliberately outside the lock, because in the ordinary case nobody is
+    /// waiting and taking a lock to discover that would put the contention straight back. It
+    /// is safe because the add above is a full fence: either this read sees a waiter
+    /// registered before it, or that waiter's own re-check under the lock sees the credit the
+    /// add contributed.
+    /// </remarks>
+    private void SignalConnectionWindowWaiter()
+    {
+        if (Volatile.Read(ref _connectionWindowWaiter) is null)
+            return;
+
+        TaskCompletionSource<bool>? waiter;
         lock (_windowLock)
         {
-            _connectionWindowSize += amount;
-            if (_connectionWindowSize > 0)
-            {
-                var w = _connectionWindowWaiter;
-                _connectionWindowWaiter = null;
-                w?.TrySetResult(true);
-            }
+            waiter = _connectionWindowWaiter;
+            _connectionWindowWaiter = null;
         }
+
+        waiter?.TrySetResult(true);
     }
 
     /// <summary>Atomically reserve <paramref name="n"/> bytes from both stream and connection
     /// windows, or nothing if either is short. Used by the single-frame fast path.</summary>
-    private bool TryReserveBothWindows(Http2Stream stream, int n)
+    internal bool TryReserveBothWindows(Http2Stream stream, int n)
     {
         if (!stream.TryReserveWindow(n))
             return false;
@@ -1037,16 +1089,7 @@ public class Http2Connection : IAsyncDisposable
         if (frame.StreamId == 0)
         {
             // Connection-level window update: grant more send quota and wake any waiter.
-            lock (_windowLock)
-            {
-                _connectionWindowSize += increment;
-                if (_connectionWindowSize > 0)
-                {
-                    var w = _connectionWindowWaiter;
-                    _connectionWindowWaiter = null;
-                    w?.TrySetResult(true);
-                }
-            }
+            ReleaseConnectionWindow(increment);
         }
         else if (_streams.TryGetValue(frame.StreamId, out var stream))
         {

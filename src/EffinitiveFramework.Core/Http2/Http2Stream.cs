@@ -32,7 +32,12 @@ public class Http2Stream
 
     // Outbound (send) flow-control window. Starts at the peer's advertised
     // SETTINGS_INITIAL_WINDOW_SIZE and is consumed as DATA is sent, replenished by
-    // WINDOW_UPDATE frames from the client. Guarded by _windowLock; never mutate directly.
+    // WINDOW_UPDATE frames from the client.
+    //
+    // _windowSize and _aborted are read and written with interlocked and volatile operations,
+    // not under _windowLock, because every response on the connection reserves from them and a
+    // Monitor there serialises all of a connection's streams. _windowLock now guards only the
+    // waiter field, which is touched when a sender has to park and when one is woken.
     private readonly object _windowLock = new();
     private TaskCompletionSource<bool>? _windowWaiter;
     private int _windowSize;
@@ -46,7 +51,7 @@ public class Http2Stream
     }
 
     /// <summary>Current send window. For diagnostics; the send path uses Acquire/Release.</summary>
-    public int WindowSize { get { lock (_windowLock) return _windowSize; } }
+    public int WindowSize => Volatile.Read(ref _windowSize);
 
     public void UpdateState(Http2StreamState newState)
     {
@@ -60,12 +65,8 @@ public class Http2Stream
     /// </summary>
     public void UpdateWindowSize(int delta)
     {
-        lock (_windowLock)
-        {
-            _windowSize += delta;
-            if (_windowSize > 0)
-                SignalNoLock();
-        }
+        if (Interlocked.Add(ref _windowSize, delta) > 0)
+            SignalWaiter();
     }
 
     /// <summary>
@@ -77,32 +78,68 @@ public class Http2Stream
     {
         while (true)
         {
+            ThrowIfAborted();
+
+            int grant = TakeUpToAvailable(desired);
+            if (grant > 0)
+                return grant;
+
             TaskCompletionSource<bool> waiter;
             lock (_windowLock)
             {
-                if (_aborted)
-                    throw new OperationCanceledException("Stream reset while awaiting flow-control window");
-                if (_windowSize > 0)
-                {
-                    int grant = Math.Min(desired, _windowSize);
-                    _windowSize -= grant;
+                // Re-checked under the lock so a grant or an abort that lands between the
+                // attempt above and the registration below is not slept through.
+                ThrowIfAborted();
+
+                grant = TakeUpToAvailable(desired);
+                if (grant > 0)
                     return grant;
-                }
+
                 waiter = _windowWaiter ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
             await waiter.Task.WaitAsync(cancellationToken);
         }
     }
 
+    private void ThrowIfAborted()
+    {
+        if (Volatile.Read(ref _aborted))
+            throw new OperationCanceledException("Stream reset while awaiting flow-control window");
+    }
+
+    /// <summary>Take as much of <paramref name="desired"/> as the window holds, or nothing.</summary>
+    private int TakeUpToAvailable(int desired)
+    {
+        while (true)
+        {
+            int current = Volatile.Read(ref _windowSize);
+            if (current <= 0)
+                return 0;
+
+            int grant = Math.Min(desired, current);
+            if (Interlocked.CompareExchange(ref _windowSize, current - grant, current) == current)
+                return grant;
+        }
+    }
+
     /// <summary>Try to reserve exactly <paramref name="n"/> bytes without awaiting.</summary>
     public bool TryReserveWindow(int n)
     {
-        lock (_windowLock)
+        // Lock-free for the same reason as the connection window: this is on the path of every
+        // response, and a Monitor here serialises all of a connection's streams. A window that
+        // has gone negative through a SETTINGS reduction (RFC 9113 §6.9.2) fails the test
+        // below like any other short window, so nothing is sent until it recovers.
+        while (true)
         {
-            if (_aborted || _windowSize < n)
+            if (Volatile.Read(ref _aborted))
                 return false;
-            _windowSize -= n;
-            return true;
+
+            int current = Volatile.Read(ref _windowSize);
+            if (current < n)
+                return false;
+
+            if (Interlocked.CompareExchange(ref _windowSize, current - n, current) == current)
+                return true;
         }
     }
 
@@ -116,18 +153,24 @@ public class Http2Stream
     /// <summary>Unblock any sender awaiting window (e.g. on RST_STREAM); they will throw.</summary>
     public void Abort()
     {
-        lock (_windowLock)
-        {
-            _aborted = true;
-            SignalNoLock();
-        }
+        Volatile.Write(ref _aborted, true);
+        SignalWaiter();
     }
 
-    private void SignalNoLock()
+    /// <summary>Wake a sender parked on this stream's window, if there is one.</summary>
+    private void SignalWaiter()
     {
-        var w = _windowWaiter;
-        _windowWaiter = null;
-        w?.TrySetResult(true);
+        if (Volatile.Read(ref _windowWaiter) is null)
+            return;
+
+        TaskCompletionSource<bool>? waiter;
+        lock (_windowLock)
+        {
+            waiter = _windowWaiter;
+            _windowWaiter = null;
+        }
+
+        waiter?.TrySetResult(true);
     }
 
     public void AddHeader(string name, string value)
