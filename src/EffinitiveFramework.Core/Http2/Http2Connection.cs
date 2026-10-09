@@ -988,6 +988,12 @@ public class Http2Connection : IAsyncDisposable
 
         // The HTTP/2 framing path delivers the body from a byte[]. A stream-backed body
         // (e.g. a static file) is read into memory here, bounded by BodyStreamLength.
+        //
+        // Framing straight out of the stream instead was tried and reverted: reading a frame's
+        // worth at a time turns one large read into one per frame, and at 256 connections that
+        // measured 86,795 req/s against 93,115 for this, consistently across three runs. The
+        // allocation it avoided is mostly cheap -- the median static file is well under the
+        // large object heap threshold -- while the extra reads are not.
         await response.MaterializeBodyStreamAsync(cancellationToken);
 
         var headers = Http2ResponseConverter.ConvertToHttp2Headers(response);
