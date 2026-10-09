@@ -143,16 +143,18 @@ public sealed partial class EffinitiveServer
                 // Pre-serialized bytes — use directly with the endpoint's content type.
                 response.Body = bytes;
             }
+            else if (responseObj is string str && !IsJsonMediaType(contentType))
+            {
+                // The endpoint named a representation that is not JSON and handed back the
+                // text of it, so the text is the body. Running it through the serializer
+                // instead would escape it into a JSON string literal and label the result
+                // with the endpoint's content type, which is a body that does not match its
+                // own Content-Type header (RFC 9110 §8.3).
+                response.Body = GetTinyTextBodyOrEncode(str);
+            }
             else if (contentType == "text/plain")
             {
-                if (responseObj is string str)
-                {
-                    response.Body = GetTinyTextBodyOrEncode(str);
-                }
-                else
-                {
-                    response.Body = System.Text.Encoding.UTF8.GetBytes(responseObj.ToString() ?? "");
-                }
+                response.Body = System.Text.Encoding.UTF8.GetBytes(responseObj.ToString() ?? "");
             }
             else
             {
@@ -168,6 +170,28 @@ public sealed partial class EffinitiveServer
             response.Body = Array.Empty<byte>();
             response.ContentType = "text/plain";
         }
+    }
+
+    /// <summary>
+    /// Whether a media type asks for JSON, either as application/json or through the +json
+    /// structured syntax suffix (RFC 6839 §3.1).
+    /// </summary>
+    /// <remarks>
+    /// Parameters are ignored and the comparison is case-insensitive, because RFC 9110 §8.3.1
+    /// makes type and subtype case-insensitive and allows parameters such as charset to follow.
+    /// A plain ordinal equality test against "application/json" would therefore miss
+    /// "application/json; charset=utf-8" and every +json type.
+    /// </remarks>
+    private static bool IsJsonMediaType(string contentType)
+    {
+        var type = contentType.AsSpan();
+        int semicolon = type.IndexOf(';');
+        if (semicolon >= 0)
+            type = type[..semicolon];
+        type = type.Trim();
+
+        return type.Equals(MediaTypes.ApplicationJson, StringComparison.OrdinalIgnoreCase)
+            || type.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
     }
 
     private static byte[] GetTinyTextBodyOrEncode(string value)
