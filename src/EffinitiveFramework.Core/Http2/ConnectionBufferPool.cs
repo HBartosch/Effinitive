@@ -35,11 +35,15 @@ namespace EffinitiveFramework.Core.Http2;
 /// </remarks>
 internal sealed class ConnectionBufferPool
 {
-    // 64 bytes is below the smallest frame worth pooling; 16 KiB is
-    // SETTINGS_MAX_FRAME_SIZE's default (RFC 9113 §6.5.2), so it is the largest buffer the
-    // write path produces in bulk.
+    // 64 bytes is below the smallest frame worth pooling. The ceiling is 32 KiB rather than
+    // the 16 KiB of SETTINGS_MAX_FRAME_SIZE's default (RFC 9113 §6.5.2), because the buffers
+    // the write path actually asks for are a frame *and its header*: a full DATA frame needs
+    // FrameHeaderLength + 16384 = 16393 bytes, and the combined HEADERS-plus-DATA buffer is
+    // larger still. A 16 KiB ceiling missed every one of them by a few bytes and sent them to
+    // the shared pool, which is the exact contention this type exists to avoid — and it did so
+    // only for large bodies, so small-response traffic looked fixed while static files did not.
     private const int MinShift = 6;
-    private const int MaxShift = 14;
+    private const int MaxShift = 15;
     private const int MinSize = 1 << MinShift;
     private const int MaxSize = 1 << MaxShift;
 

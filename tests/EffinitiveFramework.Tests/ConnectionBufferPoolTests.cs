@@ -134,6 +134,44 @@ public class ConnectionBufferPoolTests
         Assert.True(pool.Rent(200_000).Length >= 200_000);
     }
 
+    // Two pools, because "the same array came back" is true whether it came back from this
+    // connection or from ArrayPool.Shared, and the whole point is which. A buffer that reaches
+    // the shared pool is one the next connection can be handed, so a second pool receiving it
+    // is the signal that it leaked out of the first.
+    private static void AssertStaysOnItsOwnConnection(int length)
+    {
+        var owner = new ConnectionBufferPool();
+        var other = new ConnectionBufferPool();
+
+        var rented = owner.Rent(length);
+        Assert.True(rented.Length >= length);
+        owner.Return(rented);
+
+        Assert.NotSame(rented, other.Rent(length));
+        Assert.Same(rented, owner.Rent(length));
+    }
+
+    [Fact]
+    public void AFullDataFrameStaysOnTheConnection()
+    {
+        // The write path asks for a frame *and its header*, so a full DATA frame is
+        // FrameHeaderLength + SETTINGS_MAX_FRAME_SIZE: nine bytes above the frame size itself.
+        // A ceiling set at the frame size missed every one of these by those nine bytes and
+        // sent them to the shared pool, which is the contention this type exists to avoid. It
+        // showed only on large bodies, because small responses never fill a frame.
+        AssertStaysOnItsOwnConnection(
+            Http2Constants.FrameHeaderLength + (int)Http2Constants.DefaultMaxFrameSize);
+    }
+
+    [Fact]
+    public void TheCombinedHeadersAndDataBufferStaysOnTheConnection()
+    {
+        // The single-frame fast path emits HEADERS and DATA as one buffer, so it is larger
+        // again by the encoded headers and a second frame header.
+        AssertStaysOnItsOwnConnection(
+            (Http2Constants.FrameHeaderLength * 2) + (int)Http2Constants.DefaultMaxFrameSize + 256);
+    }
+
     [Fact]
     public void ReturningNothingIsHarmless()
     {
