@@ -13,10 +13,12 @@ namespace EffinitiveFramework.Core.Http2;
 public class Http2Connection : IAsyncDisposable
 {
     // Buffer queued for the single writer task. IsPooled signals ArrayPool ownership.
+    // IsPooled distinguishes a buffer the connection lent out, which must come back, from one
+    // the caller owns outright. Releasing is the connection's job rather than the struct's,
+    // because the pool the buffer came from belongs to the connection.
     private readonly record struct PooledBuffer(byte[] Data, int Length, bool IsPooled)
     {
         public Memory<byte> AsMemory() => Data.AsMemory(0, Length);
-        public void Return() { if (IsPooled) ArrayPool<byte>.Shared.Return(Data); }
     }
 
     private readonly Stream _stream;
@@ -29,8 +31,14 @@ public class Http2Connection : IAsyncDisposable
         Channel.CreateUnbounded<PooledBuffer>(new UnboundedChannelOptions { SingleReader = true });
     private readonly StreamPriorityScheduler _priorityScheduler = new();
 
+    // Write buffers live on the connection rather than in ArrayPool.Shared: they are rented on
+    // a stream's handler and returned on the writer below, and the shared pool charges a lock
+    // for every such hand-off. See ConnectionBufferPool.
+    private readonly ConnectionBufferPool _bufferPool = new();
+
     /// <summary>How many streams the dependency tree is holding. For tests.</summary>
     internal int TrackedPriorityStreamCount => _priorityScheduler.TrackedStreamCount;
+
     private HpackDecoder _hpackDecoder;
     private readonly HpackEncoder _hpackEncoder = new();
     private readonly Func<HttpRequest, Task<HttpResponse>>? _requestHandler;
@@ -175,7 +183,7 @@ public class Http2Connection : IAsyncDisposable
                 while (_writeChannel.Reader.TryRead(out var item))
                 {
                     await _stream.WriteAsync(item.AsMemory(), cancellationToken);
-                    item.Return();
+                    Release(item);
                 }
                 // One flush per batch keeps TLS records coalesced.
                 await _stream.FlushAsync(cancellationToken);
@@ -190,8 +198,15 @@ public class Http2Connection : IAsyncDisposable
         {
             // Return any buffers left in the channel (e.g. after cancellation).
             while (_writeChannel.Reader.TryRead(out var item))
-                item.Return();
+                Release(item);
         }
+    }
+
+    /// <summary>Give a written buffer back to the connection's pool.</summary>
+    private void Release(in PooledBuffer item)
+    {
+        if (item.IsPooled)
+            _bufferPool.Return(item.Data);
     }
     
     /// <summary>
@@ -983,7 +998,7 @@ public class Http2Connection : IAsyncDisposable
         {
             // HEADERS with END_HEADERS + END_STREAM (no body)
             var totalLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
-            var buffer = ArrayPool<byte>.Shared.Rent(totalLen);
+            var buffer = _bufferPool.Rent(totalLen);
             new Http2Frame
             {
                 Length = encodedHeaders.Length,
@@ -1009,7 +1024,7 @@ public class Http2Connection : IAsyncDisposable
             {
                 var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
                 var totalLen = headersFrameLen + Http2Constants.FrameHeaderLength + bodyLen;
-                var combined = ArrayPool<byte>.Shared.Rent(totalLen);
+                var combined = _bufferPool.Rent(totalLen);
 
                 new Http2Frame
                 {
@@ -1039,7 +1054,7 @@ public class Http2Connection : IAsyncDisposable
                 // Each chunk waits for window when the peer hasn't granted enough, which is
                 // what bounds in-flight memory instead of queueing the whole body at once.
                 var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
-                var hdrBuf = ArrayPool<byte>.Shared.Rent(headersFrameLen);
+                var hdrBuf = _bufferPool.Rent(headersFrameLen);
                 new Http2Frame
                 {
                     Length = encodedHeaders.Length,
@@ -1064,7 +1079,7 @@ public class Http2Connection : IAsyncDisposable
 
                     bool isLast = offset + grant >= bodyLen;
                     var dataFrameLen = Http2Constants.FrameHeaderLength + grant;
-                    var dataBuf = ArrayPool<byte>.Shared.Rent(dataFrameLen);
+                    var dataBuf = _bufferPool.Rent(dataFrameLen);
                     new Http2Frame
                     {
                         Length = grant,
@@ -1305,7 +1320,7 @@ public class Http2Connection : IAsyncDisposable
     private async Task SendFrameAsync(Http2Frame frame, CancellationToken cancellationToken)
     {
         var totalLen = Http2Constants.FrameHeaderLength + frame.Length;
-        var buffer = ArrayPool<byte>.Shared.Rent(totalLen);
+        var buffer = _bufferPool.Rent(totalLen);
         frame.WriteHeader(buffer);
         if (frame.Length > 0)
             frame.Payload.Span.CopyTo(buffer.AsSpan(Http2Constants.FrameHeaderLength));
