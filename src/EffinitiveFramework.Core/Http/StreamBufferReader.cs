@@ -108,12 +108,21 @@ internal sealed class StreamBufferReader : PipeReader
 
     public override void AdvanceTo(SequencePosition consumed, SequencePosition examined)
     {
-        long consumedOffset = _lastReturned.GetOffset(consumed);
-        long examinedOffset = _lastReturned.GetOffset(examined);
+        // Measured by slicing rather than with GetOffset. On a sequence built over an array
+        // segment, GetOffset returns the index into the array, not the distance from the start
+        // of the sequence -- so once the window had moved off zero it over-reported, this
+        // advanced past the end, and unread octets were dropped. Slicing is defined in terms of
+        // the sequence itself and cannot drift from it.
+        long consumedOffset = _lastReturned.Length - _lastReturned.Slice(consumed).Length;
+        long examinedOffset = _lastReturned.Length - _lastReturned.Slice(examined).Length;
 
         // Examining everything on offer is the consumer saying it cannot make progress without
         // more octets, which is the only thing that makes the next read block.
         _needMoreData = examinedOffset >= _lastReturned.Length;
+
+        if (consumedOffset < 0 || consumedOffset > _lastReturned.Length)
+            throw new InvalidOperationException(
+                $"Advanced to {consumedOffset} in a buffer of {_lastReturned.Length} octets.");
 
         _start += (int)consumedOffset;
 

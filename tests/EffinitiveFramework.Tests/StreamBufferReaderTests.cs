@@ -246,6 +246,35 @@ public class StreamBufferReaderTests
     }
 
     [Fact]
+    public async Task AChunkedBodyIsDecodedWholeThroughThisReader()
+    {
+        // The shape that broke in validation: the body arrives chunked and is dechunked from
+        // the reader after the headers have been consumed, by a second consumer with its own
+        // Advance pattern. 10 KB in 1 KB chunks, which is what curl produces for a body whose
+        // length it does not know up front.
+        const int total = 10240, chunk = 1024;
+        var body = new byte[total];
+        for (int i = 0; i < body.Length; i++)
+            body[i] = (byte)(i % 251);
+
+        var wire = new List<byte>();
+        for (int sent = 0; sent < total; sent += chunk)
+        {
+            wire.AddRange(Encoding.ASCII.GetBytes(chunk.ToString("x") + "\r\n"));
+            wire.AddRange(body.AsSpan(sent, chunk).ToArray());
+            wire.AddRange(Encoding.ASCII.GetBytes("\r\n"));
+        }
+        wire.AddRange(Encoding.ASCII.GetBytes("0\r\n\r\n"));
+
+        var reader = new StreamBufferReader(new ChunkedStream([.. wire], chunk: 1500), 65536);
+        var decoded = new MemoryStream();
+        await new ChunkedBodyStream(reader).CopyToAsync(decoded);
+
+        Assert.Equal(total, decoded.Length);
+        Assert.Equal(body, decoded.ToArray());
+    }
+
+    [Fact]
     public void CompletingTwiceIsHarmless()
     {
         var reader = ReaderOver(Encoding.ASCII.GetBytes("abc"));
