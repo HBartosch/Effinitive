@@ -152,12 +152,13 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
 
             _stream = sslStream;
 
-            // TLS HTTP/1.1 still uses stream-based pipes
+            // TLS HTTP/1.1 reads through a stream, because SslStream is one, so it cannot use
+            // the socket transport the plaintext path gets. It does not have to pay for a
+            // reader built to synchronise a producer and a consumer on separate threads
+            // either: a connection parses its own requests in sequence. See StreamBufferReader.
             if (NegotiatedProtocol != "h2")
             {
-                _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(
-                    bufferSize: 65536,
-                    leaveOpen: false));
+                _reader = new StreamBufferReader(_stream, bufferSize: 65536);
                 _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(
                     minimumBufferSize: 65536,
                     leaveOpen: false));
