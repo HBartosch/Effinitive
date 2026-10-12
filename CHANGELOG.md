@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.7.0] - 2026-10-01
+## [2.7.0] - 2026-10-12
 
 ### Security
+
 - **Rate limiting counted every client against a single shared allowance.** `HttpRequest.RemoteIpAddress`
   was null on every HTTP/1.1 request, plaintext and TLS alike, so `RateLimiter.ResolvePartitionKey` fell
   through to its last branch and returned `"unknown"` for every caller. One noisy client could therefore
@@ -23,6 +24,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the wiring that fills it in.
 
 ### Fixed
+
+- **A closed HTTP/2 stream never left the priority dependency tree.** `StreamPriorityScheduler.RemoveStream`
+  existed and had a unit test, but no production caller: every stream was registered on HEADERS and none was
+  ever taken out. A stream lasts one request and an HTTP/2 connection is meant to stay open, so the cost grew
+  with connection lifetime rather than with concurrency, which is why unit tests and short benchmarks all
+  missed it. Three objects survived per request, about 177 bytes. Under sustained load the resident set
+  climbed from 55 MiB to 14.8 GiB in two minutes and kept going; a heap dump found 3,326,614 live
+  `StreamPriorityNode` against 158 genuinely live streams. After the fix, 180 nodes against 183 live streams.
+  RFC 9113 §5.3.4 already described the behaviour the unused method implemented.
+
+- **A string body was serialised as JSON whenever its content type was not exactly `text/plain`.**
+  `SerializeResponse` chose between the text path and the JSON serializer by comparing the content type for
+  ordinal equality with that one literal. An endpoint declaring `text/html` and returning markup therefore put
+  a quoted, `<`-escaped JSON string literal on the wire underneath a header promising HTML, which is a
+  body contradicting its own `Content-Type` (RFC 9110 §8.3). `text/csv`, `application/xml` and even
+  `text/plain; charset=utf-8` were affected the same way, the last because the parameter defeats the
+  comparison. The decision now rests on the payload: a string is written as UTF-8 text unless the declared
+  type is JSON, where the quoting is the correct representation. Parameters are stripped, the comparison is
+  case-insensitive as RFC 9110 §8.3.1 requires, and the `+json` suffix of RFC 6839 §3.1 is honoured, so
+  `application/problem+json` still serialises.
+
+
 - **304 and HEAD responses sent content.** A response can hold its content as a byte array, a stream, an
   object still to be serialized, or a stream handler, and both places that suppress content cleared only
   the array. An endpoint returning an object had it serialized and sent anyway. RFC 9110 §15.4.5 forbids
@@ -42,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limiting defect above, fixed with it.
 
 ### Changed
+
 - **A connection now parses all of its requests into one `HttpRequest`.** The response object was already
   reused this way. A connection serves its requests one after another, so only one is ever live on it.
   **This changes a contract:** a reference kept past the end of a handler will be seen to change, and then
@@ -108,6 +132,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root into `scripts/`. The package description no longer carries performance claims measured on .NET
   8.0.15 against a framework that now targets .NET 10.
 
+### Performance
+
+Figures below are from one 32-core host, interleaved and repeated three times per build, against a
+run-to-run noise floor of about 2.5%. They are ratios between builds measured minutes apart, not absolute
+numbers comparable with any published board.
+
+- **A local file body is read synchronously rather than through the thread pool.** There is no overlapped
+  file I/O on Unix, so `Stream.ReadAsync` on a `FileStream` is emulated by queueing the work to the thread
+  pool. For a page-cached file that wraps a queue, a thread hop and a completion around a memcpy, and
+  requests are dispatched per stream with no bound, so 256 connections at 32 streams each put 8,192 such
+  reads in flight. Static file serving over HTTP/2 improved **32.8%**, from 105,253 to 139,722 req/s, and the
+  profile flipped from two-thirds blocked to two-thirds computing. HTTP/3 and the WebSocket profiles share
+  the path and improved with it. Restricted to `FileStream`: any other source could be a socket, where a
+  synchronous read would block the request thread for as long as the peer stayed quiet.
+
+- **TLS HTTP/1.1 reads through a lock-free buffered reader.** `SslStream` is a stream, so that path could not
+  use the socket transport the plaintext path gets and fell back to `PipeReader.Create`, which is built to
+  synchronise a producer and a consumer on separate threads. A connection parses its own requests in
+  sequence, so there is no second thread and nothing for the lock to protect; a caller tree put 21.4% of the
+  read path inside `Lock.EnterAndGetCurrentCount`. The replacement holds octets in one contiguous pooled
+  array, so a read result is a single segment and no segment objects are allocated per read. **+5.5%**, from
+  175,070 to 184,780 req/s.
+
+- **HTTP/2 send windows are reserved without a lock.** Both windows are a single `int` guarded by a `Monitor`,
+  which serialised every response on a connection against every other. Under load that convoys: a capture at
+  1024 connections found 186 of 356 threads parked on the connection window's lock while the server made no
+  progress at all. A compare-and-swap loop does the same job without parking anyone. On its own this did not
+  move throughput, because the contention relocated to `ArrayPool.Shared`; it is kept because a single `int`
+  does not need a `Monitor` and a process-wide serialisation point scales worse the more cores it meets.
+
+- **HTTP/2 write buffers are kept on the connection that owns them.** `ArrayPool<byte>.Shared` assumes rent
+  and return happen on one thread; the write path rents on a stream's handler and returns on the connection's
+  single writer, so the writer takes a per-core lock for every buffer after its first. Confining the buffers
+  to the connection took threads blocked on a `Monitor` from 292 of 356 to 32 of 281 under the harness's own
+  load, with `SharedArrayPool.Return` disappearing from the stacks entirely.
+
+### Notes
+
+Several plausible changes were measured and rejected rather than shipped, and the reasoning is recorded in
+the commits so they are not retried blind: framing responses straight out of the file stream instead of
+buffering them (6.8% slower, because a read per frame costs more than the allocation it saves); removing the
+HTTP/2 priority tree entirely despite nothing reading it (6.2% slower, because its lock turns out to pace the
+work); and dropping `FileOptions.Asynchronous` (no change, because the flag does not select the code path on
+Unix).
 
 ## [2.6.0] - 2026-09-01
 
