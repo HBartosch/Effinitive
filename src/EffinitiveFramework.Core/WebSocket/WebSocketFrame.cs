@@ -25,12 +25,15 @@ internal readonly struct WebSocketFrameHeader
     public readonly bool Fin;
     public readonly WebSocketOpcode Opcode;
     public readonly bool Masked;
+    /// <summary>RSV1-3 as a three-bit value. RFC 6455 §5.2: zero unless an extension defines them.</summary>
+    public readonly byte Rsv;
     public readonly int PayloadLength;
     public readonly uint MaskKey; // native-endian uint for vectorized XOR
     public bool IsControl => Opcode >= WebSocketOpcode.Close;
 
-    public WebSocketFrameHeader(bool fin, WebSocketOpcode opcode, bool masked, int payloadLength, uint maskKey)
+    public WebSocketFrameHeader(bool fin, WebSocketOpcode opcode, bool masked, int payloadLength, uint maskKey, byte rsv = 0)
     {
+        Rsv = rsv;
         Fin = fin;
         Opcode = opcode;
         Masked = masked;
@@ -75,6 +78,7 @@ public readonly struct WebSocketFrame
         reader.TryRead(out byte b1);
 
         bool fin = (b0 & 0x80) != 0;
+        byte rsv = (byte)((b0 & 0x70) >> 4);
         var opcode = (WebSocketOpcode)(b0 & 0x0F);
         bool masked = (b1 & 0x80) != 0;
         long payloadLength = b1 & 0x7F;
@@ -104,7 +108,7 @@ public readonly struct WebSocketFrame
             maskKey = MemoryMarshal.Read<uint>(maskBytes);
         }
 
-        header = new WebSocketFrameHeader(fin, opcode, masked, (int)payloadLength, maskKey);
+        header = new WebSocketFrameHeader(fin, opcode, masked, (int)payloadLength, maskKey, rsv);
         consumed = reader.Position;
         return true;
     }

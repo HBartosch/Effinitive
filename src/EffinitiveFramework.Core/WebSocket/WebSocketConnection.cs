@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.IO.Pipelines;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Unicode;
 
 namespace EffinitiveFramework.Core.WebSocket;
 
@@ -115,12 +116,12 @@ public sealed class WebSocketConnection : IAsyncDisposable
                     _closeReceived = true;
                     _reader.AdvanceTo(consumed);
                     if (!_closeSent)
-                        await SendCloseAsync(1000, null, cancellationToken);
+                        await SendCloseAsync(_peerCloseCode, null, cancellationToken);
                     return null;
 
-                case ReceiveStep.ProtocolError:
+                case ReceiveStep.Fail:
                     _reader.AdvanceTo(consumed);
-                    await SendCloseAsync(1002, "protocol error", cancellationToken);
+                    await SendCloseAsync(_failCode, _failReason, cancellationToken);
                     return null;
 
                 default:
@@ -134,6 +135,56 @@ public sealed class WebSocketConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Check a close frame's payload and decide what to echo back.
+    /// </summary>
+    /// <remarks>
+    /// RFC 6455 §5.5.1 allows a close frame to carry nothing, or a two-octet status code
+    /// optionally followed by a reason. One octet is neither, so there is no code to read and
+    /// the frame is malformed. The reason is text, so §5.5.1 requires it to be valid UTF-8.
+    ///
+    /// §7.4.1 reserves the codes. 1005 and 1006 are for an application to observe locally and
+    /// "MUST NOT be set as a status code in a Close control frame by an endpoint", 1004 has no
+    /// meaning, and the rest of 1000-2999 is unassigned; 3000-4999 is open for libraries and
+    /// applications. A code outside that leaves the peer's intent unreadable.
+    /// </remarks>
+    private ReceiveStep ValidateClose(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length == 0)
+        {
+            _peerCloseCode = 1000;
+            return ReceiveStep.CloseReceived;
+        }
+
+        if (payload.Length == 1)
+            return Fail(1002, "close payload of one octet carries no status code");
+
+        ushort code = BinaryPrimitives.ReadUInt16BigEndian(payload);
+        if (!IsSendableCloseCode(code))
+            return Fail(1002, "reserved close status code");
+
+        if (!Utf8.IsValid(payload[2..]))
+            return Fail(1007, "invalid UTF-8 in close reason");
+
+        _peerCloseCode = code;
+        return ReceiveStep.CloseReceived;
+    }
+
+    /// <summary>Whether RFC 6455 §7.4.1 allows this code to appear in a close frame.</summary>
+    private static bool IsSendableCloseCode(ushort code) => code switch
+    {
+        // 1004 was never defined; 1005 and 1006 are observed locally, never sent.
+        1000 or 1001 or 1002 or 1003 or 1007 or 1008 or 1009 or 1010 or 1011 => true,
+        // Registered after RFC 6455: 1012 Service Restart, 1013 Try Again Later, 1014 Bad Gateway.
+        1012 or 1013 or 1014 => true,
+        _ => code >= 3000 && code <= 4999,
+    };
+
+    /// <summary>Whether RFC 6455 §5.2 gives this opcode a meaning.</summary>
+    private static bool IsDefinedOpcode(WebSocketOpcode opcode) => opcode is
+        WebSocketOpcode.Continuation or WebSocketOpcode.Text or WebSocketOpcode.Binary or
+        WebSocketOpcode.Close or WebSocketOpcode.Ping or WebSocketOpcode.Pong;
+
     private ValueTask FlushPendingPongAsync(CancellationToken cancellationToken)
     {
         if (!_pongPending) return ValueTask.CompletedTask;
@@ -146,7 +197,22 @@ public sealed class WebSocketConnection : IAsyncDisposable
         NeedMoreData,
         Message,
         CloseReceived,
-        ProtocolError,
+        Fail,
+    }
+
+    // Close code for the pending failure. RFC 6455 §7.4.1: 1002 for a protocol error, 1007 for
+    // payload that is not consistent with the message type.
+    private ushort _failCode;
+    private string? _failReason;
+
+    // Echoed back when the peer closes. RFC 6455 §5.5.1: the reply should carry the same code.
+    private ushort _peerCloseCode = 1000;
+
+    private ReceiveStep Fail(ushort code, string reason)
+    {
+        _failCode = code;
+        _failReason = reason;
+        return ReceiveStep.Fail;
     }
 
     /// <summary>
@@ -177,11 +243,21 @@ public sealed class WebSocketConnection : IAsyncDisposable
             consumed = afterHeader.GetPosition(header.PayloadLength);
             buffer = buffer.Slice(consumed);
 
+            // RFC 6455 §5.2: RSV1-3 must be zero unless an extension that defines them has been
+            // negotiated. None is, so any of them set is a frame this endpoint cannot interpret.
+            if (header.Rsv != 0)
+                return Fail(1002, "reserved bit set");
+
+            // RFC 6455 §5.2 lists every opcode; 0x3-0x7 and 0xB-0xF are reserved, and a frame
+            // carrying one cannot be acted on without guessing what it means.
+            if (!IsDefinedOpcode(header.Opcode))
+                return Fail(1002, "reserved opcode");
+
             if (header.IsControl)
             {
                 // RFC 6455 §5.5: control frames MUST have payload ≤ 125 bytes and FIN=1.
                 if (header.PayloadLength > 125 || !header.Fin)
-                    return ReceiveStep.ProtocolError;
+                    return Fail(1002, "malformed control frame");
 
                 // Reused per connection rather than stack-allocated per frame:
                 // one read can carry many control frames, and a stackalloc
@@ -199,11 +275,19 @@ public sealed class WebSocketConnection : IAsyncDisposable
                         _pongPending = true; // flushed by the caller, which can await
                         break;
                     case WebSocketOpcode.Close:
-                        return ReceiveStep.CloseReceived;
+                        return ValidateClose(ctrlPayload);
                     // Pong: RFC 6455 §5.5.3 — ignore unsolicited pong
                 }
                 continue;
             }
+
+            // RFC 6455 §5.4: a continuation only continues something. A data frame arriving while
+            // a message is already in progress, or a continuation arriving when none is, leaves
+            // the stream with no coherent reading.
+            if (_firstFrame && header.Opcode == WebSocketOpcode.Continuation)
+                return Fail(1002, "continuation with nothing to continue");
+            if (!_firstFrame && header.Opcode != WebSocketOpcode.Continuation)
+                return Fail(1002, "new data frame inside a fragmented message");
 
             // Data frame: copy payload directly into reusable message buffer, then unmask.
             if (_firstFrame) { _messageOpcode = header.Opcode; _firstFrame = false; }
@@ -215,6 +299,13 @@ public sealed class WebSocketConnection : IAsyncDisposable
 
             if (header.Fin)
             {
+                // RFC 6455 §5.6: a text message's payload MUST be valid UTF-8, and §8.1 requires
+                // the connection to fail when it is not. Checked on the whole message rather than
+                // per frame, because a fragment may legitimately end mid-codepoint (§5.4).
+                if (_messageOpcode == WebSocketOpcode.Text &&
+                    !Utf8.IsValid(_messageBuffer.WrittenSpan))
+                    return Fail(1007, "invalid UTF-8 in text message");
+
                 // Defer the flush only when another WHOLE frame is already
                 // buffered, so the response about to be written is certain to be
                 // followed by another without waiting on the network.
