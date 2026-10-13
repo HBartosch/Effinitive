@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-10-13
+
+### Fixed
+
+- **The WebSocket implementation accepted frames RFC 6455 requires a server to refuse.** The
+  Autobahn TestSuite failed 110 of its 301 cases; after this fix none do (294 OK, 4 non-strict,
+  3 informational). Every failure was the same shape: a malformed frame processed as though it
+  were valid. A well-behaved client never sends one, which is why browsers and the framework's
+  own tests were content.
+
+  - **§5.2** RSV1-3 must be zero unless a negotiated extension defines them. The parser discarded
+    those bits entirely; a frame setting one is now refused with 1002.
+  - **§5.2** Opcodes outside 0x0-0x2 and 0x8-0xA are reserved. They were being treated as data.
+  - **§5.4** A continuation frame arriving with no message in progress, or a data frame arriving
+    inside a fragmented one, is refused with 1002 rather than accepted.
+  - **§5.6, §8.1** A text message's payload must be valid UTF-8, and the connection must fail with
+    1007 when it is not. `Encoding.UTF8` substitutes U+FFFD and reports success, so invalid input
+    was echoed back as though it had been understood. This was 75 of the 110 failures.
+  - **§5.5.1, §7.4.1** A close frame carries nothing, or a two-octet code and an optional reason;
+    one octet is neither. Codes 1004, 1005 and 1006 and the unassigned ranges must not appear on
+    the wire. The payload was not read at all, and the reply always said 1000 rather than echoing
+    the peer's code.
+
+  **This changes behaviour for clients that were sending malformed frames.** A peer sending
+  invalid UTF-8 in a text message, setting a reserved bit, or closing with a reserved status code
+  now has its connection failed where it was previously tolerated. That is what the specification
+  requires, but it is a change in what the server accepts rather than purely an internal fix.
+
+  UTF-8 is checked once the final frame of a message arrives rather than per frame, because §5.4
+  allows a fragment boundary to fall inside a character. Autobahn 6.4.1-6.4.4 would prefer the
+  connection to fail at the offending octet and report this as non-strict rather than failing; the
+  §8.1 obligation is met either way.
+
+### Notes
+
+The UTF-8 check is new work on every text message and has not been measured against the echo
+workload, which runs at over ten million messages a second. `Utf8.IsValid` is vectorised and the
+payloads are small, so the cost is expected to be slight.
+
+
 ## [2.7.0] - 2026-10-12
 
 ### Security
