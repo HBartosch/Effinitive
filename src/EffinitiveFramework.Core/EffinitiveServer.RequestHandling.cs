@@ -7,7 +7,7 @@ namespace EffinitiveFramework.Core;
 
 public sealed partial class EffinitiveServer
 {
-    private async Task HandleRequestAsync(HttpRequest request, HttpResponse response, CancellationToken cancellationToken)
+    internal async Task HandleRequestAsync(HttpRequest request, HttpResponse response, CancellationToken cancellationToken)
     {
         // Handle asterisk-form target: only OPTIONS allowed with *
         if (request.Path == "*")

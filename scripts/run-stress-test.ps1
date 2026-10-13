@@ -1,4 +1,8 @@
 # EffinitiveFramework Stress Test
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 param(
     [int]$DurationSeconds = 30,
     [int]$WarmupSeconds = 5
@@ -12,7 +16,7 @@ Start-Sleep -Seconds 2
 
 # Start server
 Write-Host "Starting server..." -ForegroundColor Yellow
-$server = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PSScriptRoot'; dotnet run --configuration Release --project samples/EffinitiveFramework.Sample" -PassThru -WindowStyle Minimized
+$server = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --configuration Release --project samples/EffinitiveFramework.Sample" -PassThru -WindowStyle Minimized
 Start-Sleep -Seconds 5
 
 # Warmup

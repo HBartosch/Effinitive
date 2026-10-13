@@ -50,10 +50,15 @@ public static class Http2RequestConverter
     /// connection rather than the stream.
     /// </para>
     /// </summary>
+    /// <param name="httpVersion">
+    /// What the request reports as its version. HTTP/3 shares this conversion but is not HTTP/2,
+    /// and an application that inspects the version should not be told otherwise.
+    /// </param>
     public static HttpRequest ConvertToHttp1Request(
         List<(string name, string value)> headers,
         byte[] body,
-        System.Net.IPAddress? remoteIpAddress = null)
+        System.Net.IPAddress? remoteIpAddress = null,
+        string httpVersion = Http.HttpVersions.Http20)
     {
         var request = new HttpRequest { RemoteIpAddress = remoteIpAddress };
         
@@ -87,7 +92,7 @@ public static class Http2RequestConverter
         
         request.Body = body.AsMemory();
         request.ContentLength = body.Length;
-        request.HttpVersion = "HTTP/2.0";
+        request.HttpVersion = httpVersion;
         
         return request;
     }

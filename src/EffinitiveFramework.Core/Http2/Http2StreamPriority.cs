@@ -91,6 +91,19 @@ public class StreamPriorityScheduler
     }
 
     /// <summary>
+    /// How many streams the dependency tree is currently holding.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so a test can assert the tree shrinks again. A connection registers a node per
+    /// stream and a stream lasts one request, so a tree that only ever grows is a leak that
+    /// scales with how long the connection stays open rather than with how much is in flight.
+    /// </remarks>
+    internal int TrackedStreamCount
+    {
+        get { lock (_lock) return _streams.Count; }
+    }
+
+    /// <summary>
     /// Register a stream with priority information
     /// </summary>
     public void RegisterStream(int streamId, Http2StreamPriority? priority = null)

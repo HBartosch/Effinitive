@@ -1,5 +1,11 @@
 # EffinitiveFramework Benchmark Results
 
+> **Historical.** These figures were measured on .NET 8.0.15 against an earlier
+> build. The framework now targets .NET 10, so they do not describe the current
+> code and should not be quoted as current performance. Kept for history. Run
+> the suite on your own hardware and workload for figures that mean something
+> for your case.
+
 ## Framework Comparison - HTTP End-to-End Performance
 
 **Test Environment:**

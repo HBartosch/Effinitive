@@ -25,6 +25,16 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
     private bool _isSecure;
     private CancellationTokenSource? _timeoutCts;
 
+    /// <summary>
+    /// The one request this connection parses into, reset before each use.
+    /// </summary>
+    /// <remarks>
+    /// A connection serves its requests one after another, so only one is ever live on it, and
+    /// the response object is already reused on the same reasoning. See
+    /// <see cref="HttpRequest"/> for what that means for code that holds on to one.
+    /// </remarks>
+    private readonly HttpRequest _request = new();
+
     // High-performance transport (plaintext only)
     private SocketTransportConnection? _transport;
     
@@ -69,6 +79,18 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
             return new DuplexPipeStream(_reader, _writer);
         return null;
     }
+
+    /// <summary>
+    /// The connection's pipes, when it has them. Null on a TLS connection,
+    /// which reads and writes through its <see cref="System.Net.Security.SslStream"/>.
+    /// </summary>
+    /// <remarks>
+    /// Offered so a protocol that takes over the connection can read and write
+    /// the transport directly, rather than through the <see cref="Stream"/>
+    /// adapter, which would copy in each direction and flush twice per write.
+    /// </remarks>
+    internal (PipeReader Reader, PipeWriter Writer)? TransportPipes =>
+        _stream == null && _reader != null && _writer != null ? (_reader, _writer) : null;
 
     /// <summary>
     /// Initialize connection with a socket (public API — legacy/TLS path).
@@ -130,12 +152,13 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
 
             _stream = sslStream;
 
-            // TLS HTTP/1.1 still uses stream-based pipes
+            // TLS HTTP/1.1 reads through a stream, because SslStream is one, so it cannot use
+            // the socket transport the plaintext path gets. It does not have to pay for a
+            // reader built to synchronise a producer and a consumer on separate threads
+            // either: a connection parses its own requests in sequence. See StreamBufferReader.
             if (NegotiatedProtocol != "h2")
             {
-                _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(
-                    bufferSize: 65536,
-                    leaveOpen: false));
+                _reader = new StreamBufferReader(_stream, bufferSize: 65536);
                 _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(
                     minimumBufferSize: 65536,
                     leaveOpen: false));
@@ -219,7 +242,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
 
         try
         {
-            var request = new HttpRequest { RemoteIpAddress = RemoteIpAddress, RemoteIpAddressText = RemoteIpAddressText };
+            var request = BeginRequest();
 
             while (true)
             {
@@ -238,6 +261,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
                     {
                         _reader.AdvanceTo(consumed);
                         LastActivity = DateTime.UtcNow;
+                        StampConnectionState(request);
                         // Reset the CTS for the next read instead of disposing
                         TryResetTimeoutCts();
                         return request;
@@ -426,7 +450,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
             return null;
         }
 
-        var request = new HttpRequest { RemoteIpAddress = RemoteIpAddress, RemoteIpAddressText = RemoteIpAddressText };
+        var request = BeginRequest();
         if (HttpRequestParser.TryParseRequest(
             ref buffer,
             request,
@@ -436,12 +460,47 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
         {
             _reader.AdvanceTo(consumed);
             LastActivity = DateTime.UtcNow;
+            StampConnectionState(request);
             return request;
         }
 
         // Incomplete request — mark as examined so the next ReadAsync gets fresh data appended
         _reader.AdvanceTo(buffer.Start, buffer.End);
         return null;
+    }
+
+    /// <summary>
+    /// Clears the connection's request and stamps it with the peer address, ready to parse into.
+    /// </summary>
+    /// <remarks>
+    /// The address is re-applied rather than preserved across the reset, so that a request carries
+    /// only what this connection put there and Reset() has no exceptions to remember.
+    /// </remarks>
+    private HttpRequest BeginRequest()
+    {
+        _request.Reset();
+        return _request;
+    }
+
+    /// <summary>
+    /// Applies the facts that belong to the connection rather than to the text of the request.
+    /// </summary>
+    /// <remarks>
+    /// Called after a successful parse rather than before it. A request can arrive across any
+    /// number of reads, so <see cref="HttpRequestParser.TryParseRequest"/> resets the request at
+    /// the top of every attempt to start each one from a clean slate. Anything stamped before
+    /// the parse is therefore cleared by it, which is how the peer address came to be null on
+    /// every HTTP/1.1 request and how the scheme came to read as plaintext over TLS.
+    ///
+    /// Whether the request arrived over TLS is a property of the connection, so HTTP/1.1 has
+    /// nowhere else to learn it from; HTTP/2 and HTTP/3 read it off the :scheme pseudo-header
+    /// instead (RFC 9113 §8.3.1).
+    /// </remarks>
+    private void StampConnectionState(HttpRequest request)
+    {
+        request.RemoteIpAddress = RemoteIpAddress;
+        request.RemoteIpAddressText = RemoteIpAddressText;
+        request.IsHttps = _isSecure;
     }
 
     /// <summary>
@@ -452,6 +511,12 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
         _timeoutCts?.Cancel();
         _timeoutCts?.Dispose();
         _timeoutCts = null;
+
+        // The pooled connection will serve a different peer next. Clearing here returns any
+        // rented body buffer and drops references to the last request rather than holding them
+        // for as long as the connection sits in the pool.
+        _request.Reset();
+
         // Keep socket/stream/pipelines for reuse
     }
 

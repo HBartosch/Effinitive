@@ -41,9 +41,22 @@ public class SecurityFixTests
     [Fact]
     public void Http2Constants_HasSecureDefaults()
     {
-        Assert.Equal(256u, Http2Constants.DefaultMaxConcurrentStreams);
+        // These four are what the server undertakes to a single peer. Their
+        // product is the exposure: concurrent streams multiplied by the window
+        // is the memory one connection can oblige the server to hold, and it is
+        // committed per connection, so a raise here is multiplied by every
+        // connection the server accepts. Raising either needs a reason.
+        Assert.Equal(100u, Http2Constants.DefaultMaxConcurrentStreams);
+        Assert.Equal(98304u, Http2Constants.DefaultInitialWindowSize);
         Assert.Equal(16384u, Http2Constants.DefaultMaxFrameSize);
         Assert.Equal(65536u, Http2Constants.DefaultMaxHeaderListSize);
+
+        // Under 32 MiB of advertised buffer per connection. At 1024 connections
+        // that is a bound worth keeping in view.
+        var perConnectionBytes =
+            (long)Http2Constants.DefaultMaxConcurrentStreams * Http2Constants.DefaultInitialWindowSize;
+        Assert.True(perConnectionBytes < 32L * 1024 * 1024,
+            $"advertised {perConnectionBytes / (1024 * 1024)} MiB per connection");
     }
 
     [Fact]

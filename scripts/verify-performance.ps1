@@ -1,11 +1,15 @@
 #!/usr/bin/env pwsh
 # Quick performance verification
 
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 Write-Host "`n=== Performance Verification ===" -ForegroundColor Cyan
 
 # Start server
 Write-Host "Starting server..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$PWD\samples\EffinitiveFramework.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$RepoRoot\samples\EffinitiveFramework.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
 Start-Sleep 7
 
 Write-Host "Running 10-second test..." -ForegroundColor Yellow

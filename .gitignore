@@ -97,3 +97,14 @@ TestHttp2Post/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+## SQLite databases created by running the samples. The -shm and -wal files are
+## per-process state and must never be committed.
+*.db
+*.db-shm
+*.db-wal
+!ehthumbs.db
+!Thumbs.db
+
+## Dated one-off security scan output
+security-test-report-*.json

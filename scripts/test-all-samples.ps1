@@ -1,6 +1,10 @@
 #!/usr/bin/env pwsh
 # Test all sample endpoints to verify they work after the fix
 
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 Write-Host "=== Testing All EffinitiveFramework Samples ===" -ForegroundColor Cyan
 Write-Host ""
 
@@ -8,7 +12,7 @@ $results = @()
 
 # Test 1: Main Sample
 Write-Host "1. Testing Main Sample..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD'; dotnet run --project samples/EffinitiveFramework.Sample --configuration Release" -WindowStyle Minimized
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --project samples/EffinitiveFramework.Sample --configuration Release" -WindowStyle Minimized
 Start-Sleep -Seconds 5
 
 try {
@@ -35,7 +39,7 @@ Start-Sleep -Seconds 2
 # Test 2: Validation Sample
 Write-Host ""
 Write-Host "2. Testing Validation Sample..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD'; dotnet run --project samples/EffinitiveFramework.Validation.Sample --configuration Release" -WindowStyle Minimized
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --project samples/EffinitiveFramework.Validation.Sample --configuration Release" -WindowStyle Minimized
 Start-Sleep -Seconds 5
 
 try {
@@ -62,7 +66,7 @@ Start-Sleep -Seconds 2
 # Test 3: Auth Sample
 Write-Host ""
 Write-Host "3. Testing Auth Sample..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD'; dotnet run --project samples/EffinitiveFramework.Auth.Sample --configuration Release" -WindowStyle Minimized
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --project samples/EffinitiveFramework.Auth.Sample --configuration Release" -WindowStyle Minimized
 Start-Sleep -Seconds 5
 
 try {
@@ -94,7 +98,7 @@ Start-Sleep -Seconds 2
 # Test 4: EFCore Sample
 Write-Host ""
 Write-Host "4. Testing EFCore Sample..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD'; dotnet run --project samples/EffinitiveFramework.EFCore.Sample --configuration Release" -WindowStyle Minimized
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --project samples/EffinitiveFramework.EFCore.Sample --configuration Release" -WindowStyle Minimized
 Start-Sleep -Seconds 6
 
 try {

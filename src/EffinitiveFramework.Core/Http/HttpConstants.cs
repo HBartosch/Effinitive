@@ -33,6 +33,19 @@ public static class HeaderNames
     public const string Vary = "Vary";
     public const string XForwardedFor = "X-Forwarded-For";
 
+    // Request-side names a client sends on almost every request. Present so the parser can
+    // store a canonical instance rather than decoding the same bytes into a new string each time.
+    public const string AcceptLanguage = "Accept-Language";
+    public const string Cookie = "Cookie";
+    public const string Origin = "Origin";
+    public const string Referer = "Referer";
+    public const string SecWebSocketExtensions = "Sec-WebSocket-Extensions";
+    public const string SecWebSocketProtocol = "Sec-WebSocket-Protocol";
+    public const string SecWebSocketVersion = "Sec-WebSocket-Version";
+    public const string TE = "TE";
+    public const string UserAgent = "User-Agent";
+    public const string XRequestedWith = "X-Requested-With";
+
     // The de-facto rate-limit headers. The IETF draft drops the X- prefix, but the prefixed forms are
     // what clients and gateways actually look for today.
     public const string XRateLimitLimit = "X-RateLimit-Limit";
@@ -72,6 +85,12 @@ public static class HttpVersions
 {
     public const string Http10 = "HTTP/1.0";
     public const string Http11 = "HTTP/1.1";
+
+    // HTTP/2 and HTTP/3 carry no version in the request: the protocol is settled by ALPN or by
+    // prior knowledge before any request is sent (RFC 9113 3.3, RFC 9114 3.1). These are what a
+    // request from those protocols reports, so an application can tell them apart.
+    public const string Http20 = "HTTP/2.0";
+    public const string Http30 = "HTTP/3.0";
 }
 
 public static class HttpMethods

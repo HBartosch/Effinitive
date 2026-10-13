@@ -7,6 +7,176 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-12
+
+### Security
+
+- **Rate limiting counted every client against a single shared allowance.** `HttpRequest.RemoteIpAddress`
+  was null on every HTTP/1.1 request, plaintext and TLS alike, so `RateLimiter.ResolvePartitionKey` fell
+  through to its last branch and returned `"unknown"` for every caller. One noisy client could therefore
+  exhaust the limit for all of them. `X-Forwarded-For` never applied either, because the trusted-proxy
+  check is only consulted when the peer address is known. Present since rate limiting shipped in 2.5.0.
+  The cause was ordering: the peer address was written onto the request before it was parsed, and
+  `HttpRequestParser.TryParseRequest` resets the request at the top of every attempt, because a request
+  can arrive across any number of reads and each attempt has to start from a clean slate. The connection's
+  facts are now applied after a successful parse. The existing rate limiting tests did not catch this
+  because they build an `HttpRequest` directly and set the address on it, exercising the limiter but never
+  the wiring that fills it in.
+
+### Fixed
+
+- **A closed HTTP/2 stream never left the priority dependency tree.** `StreamPriorityScheduler.RemoveStream`
+  existed and had a unit test, but no production caller: every stream was registered on HEADERS and none was
+  ever taken out. A stream lasts one request and an HTTP/2 connection is meant to stay open, so the cost grew
+  with connection lifetime rather than with concurrency, which is why unit tests and short benchmarks all
+  missed it. Three objects survived per request, about 177 bytes. Under sustained load the resident set
+  climbed from 55 MiB to 14.8 GiB in two minutes and kept going; a heap dump found 3,326,614 live
+  `StreamPriorityNode` against 158 genuinely live streams. After the fix, 180 nodes against 183 live streams.
+  RFC 9113 §5.3.4 already described the behaviour the unused method implemented.
+
+- **A string body was serialised as JSON whenever its content type was not exactly `text/plain`.**
+  `SerializeResponse` chose between the text path and the JSON serializer by comparing the content type for
+  ordinal equality with that one literal. An endpoint declaring `text/html` and returning markup therefore put
+  a quoted, `<`-escaped JSON string literal on the wire underneath a header promising HTML, which is a
+  body contradicting its own `Content-Type` (RFC 9110 §8.3). `text/csv`, `application/xml` and even
+  `text/plain; charset=utf-8` were affected the same way, the last because the parameter defeats the
+  comparison. The decision now rests on the payload: a string is written as UTF-8 text unless the declared
+  type is JSON, where the quoting is the correct representation. Parameters are stripped, the comparison is
+  case-insensitive as RFC 9110 §8.3.1 requires, and the `+json` suffix of RFC 6839 §3.1 is honoured, so
+  `application/problem+json` still serialises.
+
+
+- **304 and HEAD responses sent content.** A response can hold its content as a byte array, a stream, an
+  object still to be serialized, or a stream handler, and both places that suppress content cleared only
+  the array. An endpoint returning an object had it serialized and sent anyway. RFC 9110 §15.4.5 forbids
+  content on a 304 and §9.3.2 forbids it on a response to HEAD, but the framing was the worse half:
+  neither response carries a length, so both are terminated by the empty line after their fields, and the
+  content that followed was read by the peer as the start of the next response. Every exchange after it on
+  that connection was misaligned. `HttpResponse.ClearBody()` now drops all four.
+- **HTTP/3 corrupted any header name outside the QPACK static table.** The decoder's literal-name branch
+  advanced past the pattern byte, called `DecodeInteger`, which advanced again, then backed up once, so
+  decoding began on the length byte and read it as the pattern. RFC 9204 §4.5.6 puts the Huffman flag and
+  the name length in that byte, so both were wrong and every field after it in the section was misaligned.
+  A client sending an API key or a correlation id over HTTP/3 had it silently mangled. The codec had no
+  tests; it now has eight.
+- **`HttpRequest.IsHttps` was always false on HTTP/1.1**, including over TLS. Whether a request arrived
+  over TLS is a property of the connection, so HTTP/1.1 has nowhere else to learn it from; HTTP/2 and
+  HTTP/3 read it from the `:scheme` pseudo-header instead (RFC 9113 §8.3.1). Same cause as the rate
+  limiting defect above, fixed with it.
+
+### Changed
+
+- **A connection now parses all of its requests into one `HttpRequest`.** The response object was already
+  reused this way. A connection serves its requests one after another, so only one is ever live on it.
+  **This changes a contract:** a reference kept past the end of a handler will be seen to change, and then
+  to be reused by the next request on that connection, or by a different peer once the connection returns
+  to the pool. Copy what is needed and pass that, rather than passing the request itself into background
+  work. ASP.NET Core carries the same hazard with `HttpContext` and answers it the same way, in writing.
+  Worth 560 bytes of the 944 the handled path allocated.
+- **HTTP/2 advertises less to a single peer.** `SETTINGS_MAX_CONCURRENT_STREAMS` drops from 256 to 100 and
+  `SETTINGS_INITIAL_WINDOW_SIZE` from 1 MB to 96 KB, both matching what Kestrel advertises. These are
+  undertakings made per connection, so their product is the memory one peer can oblige the server to hold
+  and it multiplies by the connection count: 256 streams at a 1 MB window was an undertaking to buffer
+  256 MB for any one peer that asked. It is now under 32 MB, and a test asserts that bound.
+- **HTTP/3 states its stream limit** on the listener options at the same 100, rather than leaving it to a
+  default and duplicating it with a semaphore that could never block.
+- **Header field names are stored in canonical case.** Field names are case-insensitive (RFC 9110 §5.1),
+  so a client sending `HOST` now stores `Host`. No lookup changes, because the request header dictionary
+  already compared its keys with `OrdinalIgnoreCase`. Go's `net/textproto` canonicalises the same way.
+- **HTTP/1.1 allocates roughly a third less per request**, 1,452 bytes down to about 1,030 end to end over
+  a socket. The method, the HTTP version and every known field name are now matched against the constants
+  the server already holds rather than decoded into fresh strings; the entity tag is built in one
+  allocation rather than four; and the route table's span-keyed lookups are built once by `Freeze()`
+  rather than per request, which takes 26% off the exact-match lookup every request performs.
+- **HTTP/3 reported its version as `HTTP/2.0`.** Both protocols build their requests through the
+  same conversion, and neither carries a version on the wire, so the conversion states one and
+  stated the same for both. Nothing in the server was misled, since the only reader is the
+  HTTP/1.1 validation path, but an application inspecting `HttpRequest.HttpVersion` was.
+- **The HTTP/3 response path no longer builds a list or a string per field.** The field section is
+  encoded straight from the response: the status comes from a table the process already holds, the
+  content length is written as digits into the destination, and known field names map to their
+  lowercase form rather than being lowercased each time. Allocation per request fell from 4,583
+  bytes to 4,473. Throughput did not change, which is worth stating plainly: three separate
+  allocation reductions on this path moved it none, so HTTP/3 here is not allocation-bound.
+- **The end-of-stream flag is sent with the response rather than after it.** `CompleteWrites()` is
+  a second call into the transport where the `completeWrites` overload sets the FIN on the send
+  already being made; the runtime documents them as equivalent. Ten alternating pairs, with the
+  order flipped halfway, gave 244,051 against 231,345 req/s, positive in seven of ten but with a
+  paired t of 1.24. That is not a result. Kept because one call is less work than two and is what
+  Kestrel does, not because it was shown to be faster.
+- **HTTP/3 throughput is 2.9x what it was, and now ahead of Kestrel.** Measured on a 32-core host
+  with the server pinned to 16 cores and the load generator to the other 16, running the arena's
+  own h2load profile at 64 connections and 64 streams, alternating runs with the listening process
+  verified before each: 158,621 req/s at the start to 455,556. Kestrel's own arena entry on the
+  same host and the same load measures 323,335. Two changes account for nearly all of it.
+
+  Every request had been making three to five separate reads from the stream before it was parsed
+  at all, because a variable-length integer (RFC 9000 §16) needs its first byte before its length
+  is known. Each was a suspension the request waited on, which is why threads sat idle with cores
+  free. Frames now come through a buffer, which was worth 1.8x.
+
+  And every QUIC read and write was handed the server's shutdown token. Awaiting with a token
+  registers a callback on it and unregisters it afterwards, and that token is one object shared by
+  every stream on every connection, so thousands of concurrent streams were taking the same
+  registration lock twice per operation. A call tree built from the trace found it: 11% of all
+  time in `Thread.Sleep`, reached 94% from `CancellationTokenSource`, which is a thread sleeping
+  out a contended lock. Kestrel passes no token to its per-stream operations either, keeping one
+  only for accepting a stream and relying on aborting a stream to end anything outstanding.
+  Removing it was worth a further 1.97x, and shutdown still works the same way: disposing the
+  connection aborts its streams and the pending read throws.
+- **A cleartext WebSocket takes the connection's own pipes** rather than wrapping them in a `Stream` and
+  building a second pipe over that, which cost a copy each way and an extra flush per message. The frame
+  parser also moved out of the receive state machine, since a local live across an `await` becomes a field
+  on that machine and is boxed on every suspension.
+- Stale documentation removed, build artefacts untracked, and nineteen scripts moved out of the repository
+  root into `scripts/`. The package description no longer carries performance claims measured on .NET
+  8.0.15 against a framework that now targets .NET 10.
+
+### Performance
+
+Figures below are from one 32-core host, interleaved and repeated three times per build, against a
+run-to-run noise floor of about 2.5%. They are ratios between builds measured minutes apart, not absolute
+numbers comparable with any published board.
+
+- **A local file body is read synchronously rather than through the thread pool.** There is no overlapped
+  file I/O on Unix, so `Stream.ReadAsync` on a `FileStream` is emulated by queueing the work to the thread
+  pool. For a page-cached file that wraps a queue, a thread hop and a completion around a memcpy, and
+  requests are dispatched per stream with no bound, so 256 connections at 32 streams each put 8,192 such
+  reads in flight. Static file serving over HTTP/2 improved **32.8%**, from 105,253 to 139,722 req/s, and the
+  profile flipped from two-thirds blocked to two-thirds computing. HTTP/3 and the WebSocket profiles share
+  the path and improved with it. Restricted to `FileStream`: any other source could be a socket, where a
+  synchronous read would block the request thread for as long as the peer stayed quiet.
+
+- **TLS HTTP/1.1 reads through a lock-free buffered reader.** `SslStream` is a stream, so that path could not
+  use the socket transport the plaintext path gets and fell back to `PipeReader.Create`, which is built to
+  synchronise a producer and a consumer on separate threads. A connection parses its own requests in
+  sequence, so there is no second thread and nothing for the lock to protect; a caller tree put 21.4% of the
+  read path inside `Lock.EnterAndGetCurrentCount`. The replacement holds octets in one contiguous pooled
+  array, so a read result is a single segment and no segment objects are allocated per read. **+5.5%**, from
+  175,070 to 184,780 req/s.
+
+- **HTTP/2 send windows are reserved without a lock.** Both windows are a single `int` guarded by a `Monitor`,
+  which serialised every response on a connection against every other. Under load that convoys: a capture at
+  1024 connections found 186 of 356 threads parked on the connection window's lock while the server made no
+  progress at all. A compare-and-swap loop does the same job without parking anyone. On its own this did not
+  move throughput, because the contention relocated to `ArrayPool.Shared`; it is kept because a single `int`
+  does not need a `Monitor` and a process-wide serialisation point scales worse the more cores it meets.
+
+- **HTTP/2 write buffers are kept on the connection that owns them.** `ArrayPool<byte>.Shared` assumes rent
+  and return happen on one thread; the write path rents on a stream's handler and returns on the connection's
+  single writer, so the writer takes a per-core lock for every buffer after its first. Confining the buffers
+  to the connection took threads blocked on a `Monitor` from 292 of 356 to 32 of 281 under the harness's own
+  load, with `SharedArrayPool.Return` disappearing from the stacks entirely.
+
+### Notes
+
+Several plausible changes were measured and rejected rather than shipped, and the reasoning is recorded in
+the commits so they are not retried blind: framing responses straight out of the file stream instead of
+buffering them (6.8% slower, because a read per frame costs more than the allocation it saves); removing the
+HTTP/2 priority tree entirely despite nothing reading it (6.2% slower, because its lock turns out to pace the
+work); and dropping `FileOptions.Asynchronous` (no change, because the flag does not select the code path on
+Unix).
+
 ## [2.6.0] - 2026-09-01
 
 ### Added

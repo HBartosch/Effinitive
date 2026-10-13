@@ -18,6 +18,16 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+
+    <!-- Pinned ahead of what EF Core asks for. Microsoft.EntityFrameworkCore.Sqlite 10.0.3
+         resolves SQLitePCLRaw.lib.e_sqlite3 2.1.11, which carries a SQLite older than 3.50.2
+         and so the aggregate-term memory corruption described by GHSA on that package. This is
+         the native binary only: it declares no managed dependencies, so the managed wrapper
+         stays on the version EF Core expects and only the embedded SQLite moves.
+
+         The advisory reports no patched version because the package renumbered to track SQLite
+         itself, so the fix is 3.50.3 and above rather than a 2.1.x release. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
   </ItemGroup>
 
 </Project>

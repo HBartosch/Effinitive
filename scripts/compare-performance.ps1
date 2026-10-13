@@ -1,4 +1,8 @@
 # Comparative Performance Test: EffinitiveFramework vs GenHTTP
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 param([int]$DurationSeconds = 20)
 
 Write-Host "`n===============================================================" -ForegroundColor Cyan
@@ -16,7 +20,7 @@ function Test-Framework {
     Write-Host "===============================================================" -ForegroundColor Cyan
     
     Write-Host "Starting server on port $Port..." -ForegroundColor Yellow
-    $server = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PSScriptRoot'; dotnet run --configuration Release --project $Project" -PassThru -WindowStyle Minimized
+    $server = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --configuration Release --project $Project" -PassThru -WindowStyle Minimized
     Start-Sleep -Seconds 6
     
     Write-Host "Warming up..." -ForegroundColor Yellow

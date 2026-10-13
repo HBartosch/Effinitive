@@ -1,4 +1,8 @@
 # Comprehensive Benchmark: Test actual benchmark endpoints
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 param([int]$DurationSeconds = 20)
 
 Write-Host "`n================================================================" -ForegroundColor Cyan
@@ -23,7 +27,7 @@ function Test-Endpoint {
 
 # Start EffinitiveFramework
 Write-Host "Starting EffinitiveFramework..." -ForegroundColor Yellow
-$effServer = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PSScriptRoot'; dotnet run --configuration Release --project samples/EffinitiveFramework.Sample" -PassThru -WindowStyle Minimized
+$effServer = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --configuration Release --project samples/EffinitiveFramework.Sample" -PassThru -WindowStyle Minimized
 Start-Sleep -Seconds 8
 
 Write-Host "Warming up..." -ForegroundColor Gray
@@ -64,7 +68,7 @@ Write-Host "`n================================================================" 
 Write-Host "Starting GenHTTP..." -ForegroundColor Yellow
 Write-Host "================================================================" -ForegroundColor Cyan
 
-$genServer = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PSScriptRoot'; dotnet run --configuration Release --project GenHttpSample" -PassThru -WindowStyle Minimized
+$genServer = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$RepoRoot'; dotnet run --configuration Release --project GenHttpSample" -PassThru -WindowStyle Minimized
 Start-Sleep -Seconds 8
 
 Write-Host "Warming up..." -ForegroundColor Gray

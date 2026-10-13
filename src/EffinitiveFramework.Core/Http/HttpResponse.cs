@@ -129,6 +129,31 @@ public sealed class HttpResponse
     /// <summary>
     /// Reset the response for reuse
     /// </summary>
+    /// <summary>
+    /// Drops every body this response might send, leaving its status and header fields alone.
+    /// </summary>
+    /// <remarks>
+    /// A response can carry its content as <see cref="Body"/>, as a <see cref="BodyStream"/>, as a
+    /// <see cref="BodyObject"/> still to be serialized, or as a <see cref="StreamHandler"/>. A
+    /// status that must not carry content has to drop all four: clearing only the first leaves a
+    /// deferred object to be serialized by the writer, which then sends content under a status
+    /// that promised none, and sends it without a length, so the peer reads it as the start of
+    /// the next response. See RFC 9110 §15.4.5 for 304 and §9.3.2 for HEAD.
+    /// </remarks>
+    public void ClearBody()
+    {
+        Body = null;
+        if (BodyStream != null)
+        {
+            BodyStream.Dispose();
+            BodyStream = null;
+        }
+        BodyStreamLength = 0;
+        BodyObject = null;
+        BodySerializerOptions = null;
+        StreamHandler = null;
+    }
+
     public void Reset()
     {
         StatusCode = 200;
@@ -166,12 +191,35 @@ public sealed class HttpResponse
         {
             var buffer = new byte[length];
             var total = 0;
-            while (total < length)
+
+            // A local file is read synchronously. There is no overlapped file I/O on Unix, so
+            // ReadAsync hands the work to SafeFileHandle.ThreadPoolValueTaskSource, which
+            // "queues asynchronous RandomAccess operations to be completed synchronously on the
+            // thread pool" -- a queue, a thread hop and a completion for what, on a page-cached
+            // file, is a memcpy. A profile under load found that type holding 160 threads.
+            //
+            // Only for FileStream. Any other source could be a socket or a pipe, where a
+            // synchronous read blocks the caller for as long as the peer is quiet, and that is
+            // exactly what must not happen on a request thread.
+            if (stream is FileStream)
             {
-                var read = await stream.ReadAsync(buffer.AsMemory(total, length - total), cancellationToken);
-                if (read <= 0) break;
-                total += read;
+                while (total < length)
+                {
+                    var read = stream.Read(buffer, total, length - total);
+                    if (read <= 0) break;
+                    total += read;
+                }
             }
+            else
+            {
+                while (total < length)
+                {
+                    var read = await stream.ReadAsync(buffer.AsMemory(total, length - total), cancellationToken);
+                    if (read <= 0) break;
+                    total += read;
+                }
+            }
+
             Body = total == length ? buffer : buffer[..total];
         }
         finally

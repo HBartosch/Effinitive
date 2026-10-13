@@ -9,7 +9,8 @@
 ![HTTP/2 Support](https://img.shields.io/badge/HTTP%2F2-supported-brightgreen?style=flat-square)
 ![HPACK Compression](https://img.shields.io/badge/HPACK-100%25%20RFC%207541-brightgreen?style=flat-square)
 
-A high-performance C# web framework designed to outperform FastEndpoints and compete with GenHTTP.
+A C# web framework built from scratch, implementing HTTP/1.1, HTTP/2 and HTTP/3
+directly rather than layering on an existing server.
 
 ## 🚀 Performance Goals
 
@@ -348,24 +349,12 @@ The benchmark suite compares:
 
 ## 🎯 Benchmark Results
 
-### Framework Comparison (HTTP End-to-End)
+Run the suite yourself on your own hardware and workload; that is the only
+measurement that tells you anything about your case.
 
-| Framework                   | GET Mean  | POST Mean | vs EffinitiveFramework |
-|----------------------------|-----------|-----------|------------------------|
-| **EffinitiveFramework**    | **44.37 μs** | **44.89 μs** | **Baseline** |
-| GenHTTP                    | 54.58 μs  | 57.04 μs  | 1.23-1.27x slower |
-| FastEndpoints              | 726.72 μs | 725.10 μs | **16.2-16.4x slower** |
-| ASP.NET Core Minimal API   | 725.19 μs | 715.01 μs | **15.9-16.4x slower** |
-
-### Key Performance Metrics
-
-✅ **Fastest C# web framework tested**  
-✅ **1.23-1.27x faster than GenHTTP** (another custom HTTP server)  
-✅ **~16x faster than FastEndpoints** and ASP.NET Core Minimal API  
-✅ **Sub-50μs response times** for both GET and POST  
-✅ **4.5-5.5 KB memory** per request (minimal allocations)  
-
-**See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed results and analysis.**
+[BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) records an earlier comparison, kept
+for history. Those figures were taken on .NET 8 and do not describe the current
+build, which targets .NET 10.
 
 ## 📚 Project Structure
 
@@ -439,6 +428,33 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - **Aggressive Inlining** - `[MethodImpl(MethodImplOptions.AggressiveInlining)]`
 - **Struct Types** - Value types for small, frequently-used data
 - **Unsafe Code** - Low-level optimizations where beneficial
+
+## 🆕 What's New in v2.7.0
+
+| Change | Details |
+|---|---|
+| Rate limiting counted every client as one | `HttpRequest.RemoteIpAddress` was null on every HTTP/1.1 request, so the limiter's partition key was `"unknown"` for all callers and one noisy client could exhaust everyone's allowance. `X-Forwarded-For` never applied either. Present since 2.5.0. |
+| 304 and HEAD no longer send content | Both paths cleared only one of the four ways a response can hold content, so an endpoint returning an object had it sent anyway. Since neither response carries a length, the peer read that content as the start of the next one and the connection desynchronised. |
+| HTTP/3 field names | The QPACK decoder began reading one byte late, corrupting any header name outside the static table and every field after it. The codec now has tests. |
+| Requests are reused per connection | **Behaviour change.** A connection parses all of its requests into one `HttpRequest`, as it already did for responses. A reference kept past the end of a handler will be seen to change. Copy what you need rather than passing the request into background work. |
+| HTTP/2 advertises less per peer | `SETTINGS_MAX_CONCURRENT_STREAMS` 256 → 100 and `SETTINGS_INITIAL_WINDOW_SIZE` 1 MB → 96 KB, matching Kestrel. One peer's exposure drops from 256 MB per connection to under 32 MB. |
+| Less work per request | HTTP/1.1 allocates about a third less, 1,452 → 1,030 bytes end to end. HTTP/3 throughput is about 1.6x higher, 158,621 → 253,800 req/s on sixteen pinned cores. |
+
+See [CHANGELOG.md](CHANGELOG.md).
+
+## 🆕 What's New in v2.6.0
+
+| Feature | Details |
+|---|---|
+| Multiple listeners | `AddListener()` adds a socket beyond `UsePort()` and `UseHttpsPort()`, each with its own certificate and its own ALPN list. One server can offer HTTP/2 and HTTP/1.1 on one port while offering HTTP/1.1 alone on another. |
+| ALPN belongs to the listener | Per RFC 7301 §3.2 the server selects from what the client advertised, and its own preference governs, so the list is what decides the protocol a port actually serves. |
+| Cleartext HTTP/2 | `UseHttp2Cleartext` serves h2c with prior knowledge (RFC 9113 §3.3). The connection preface is validated as on the TLS path, so a client speaking HTTP/1.1 on such a port is rejected rather than served over the wrong protocol. |
+| Certificate rotation | `TlsOptions.ReloadOnChange` resolves the certificate per handshake, so a renewal on disk takes effect without a restart. Established connections keep the certificate they negotiated with. |
+| `close_notify` on close | TLS connections send the alert before closing the write side (RFC 8446 §6.1), so a client can tell a complete response from a truncated one. |
+
+Fixes: a header line whose CRLF was split across two TCP reads is now carried
+rather than rejected with `400`, and a WebSocket reply is no longer held back by
+a partly-arrived following frame. See [CHANGELOG.md](CHANGELOG.md).
 
 ## 🆕 What's New in v2.5.0
 

@@ -13,10 +13,12 @@ namespace EffinitiveFramework.Core.Http2;
 public class Http2Connection : IAsyncDisposable
 {
     // Buffer queued for the single writer task. IsPooled signals ArrayPool ownership.
+    // IsPooled distinguishes a buffer the connection lent out, which must come back, from one
+    // the caller owns outright. Releasing is the connection's job rather than the struct's,
+    // because the pool the buffer came from belongs to the connection.
     private readonly record struct PooledBuffer(byte[] Data, int Length, bool IsPooled)
     {
         public Memory<byte> AsMemory() => Data.AsMemory(0, Length);
-        public void Return() { if (IsPooled) ArrayPool<byte>.Shared.Return(Data); }
     }
 
     private readonly Stream _stream;
@@ -28,11 +30,21 @@ public class Http2Connection : IAsyncDisposable
     private readonly Channel<PooledBuffer> _writeChannel =
         Channel.CreateUnbounded<PooledBuffer>(new UnboundedChannelOptions { SingleReader = true });
     private readonly StreamPriorityScheduler _priorityScheduler = new();
+
+    // Write buffers live on the connection rather than in ArrayPool.Shared: they are rented on
+    // a stream's handler and returned on the writer below, and the shared pool charges a lock
+    // for every such hand-off. See ConnectionBufferPool.
+    private readonly ConnectionBufferPool _bufferPool = new();
+
+    /// <summary>How many streams the dependency tree is holding. For tests.</summary>
+    internal int TrackedPriorityStreamCount => _priorityScheduler.TrackedStreamCount;
+
     private HpackDecoder _hpackDecoder;
     private readonly HpackEncoder _hpackEncoder = new();
     private readonly Func<HttpRequest, Task<HttpResponse>>? _requestHandler;
 
-    // Connection flow control synchronization
+    // Guards the connection window's waiter field only. The window counter itself is
+    // interlocked: see TryReserveConnectionWindow for why it is not a lock.
     private readonly object _windowLock = new();
     // Woken when the client grants more connection-level send window via WINDOW_UPDATE.
     private TaskCompletionSource<bool>? _connectionWindowWaiter;
@@ -96,13 +108,22 @@ public class Http2Connection : IAsyncDisposable
     /// <summary>
     /// Start processing the HTTP/2 connection
     /// </summary>
+    // How long the farewell may take to reach a peer that has stopped reading, matching what
+    // the writer below is already given to drain.
+    private static readonly TimeSpan GoAwayTimeout = TimeSpan.FromSeconds(2);
+
     public async Task ProcessAsync(CancellationToken cancellationToken = default)
     {
         // Single writer task: all frame writes are queued here so the frame-reading
         // loop is never blocked waiting to send a SETTINGS ACK or PING ACK while
         // response tasks are occupying the old write lock.
-        // Drain uses a cancellable token so the 2-second shutdown timeout can stop it.
-        using var drainCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Deliberately not linked to the caller's token. This writer is what puts the last
+        // frames on the wire, the GOAWAY below among them, and a graceful shutdown arrives as
+        // that token firing: linked, the writer stops at the exact moment it is needed, and the
+        // two seconds the finally then grants it have already gone. Responses still in the
+        // channel were being dropped that way, which a client sees as a truncated body. The
+        // finally owns the deadline instead, which is where the timeout was always meant to be.
+        using var drainCts = new CancellationTokenSource();
         var writerTask = DrainWriteChannelAsync(drainCts.Token);
 
         try
@@ -122,9 +143,19 @@ public class Http2Connection : IAsyncDisposable
 
             await ProcessFramesAsync(cancellationToken);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            try { await SendGoAwayAsync(Http2Constants.ErrorInternalError, cancellationToken); }
+            // Not the caller's token. A graceful shutdown arrives here as a cancellation, and
+            // handing the already-cancelled token to the send means the frame is never queued,
+            // so the peer never learns which streams were accepted. RFC 9113 §6.8 says a server
+            // shutting down gracefully SHOULD send GOAWAY, which it cannot do with a token that
+            // has already fired. Bounded, so a peer that stopped reading cannot hold us open.
+            using var farewell = new CancellationTokenSource(GoAwayTimeout);
+            var code = ex is OperationCanceledException
+                ? Http2Constants.ErrorNoError
+                : Http2Constants.ErrorInternalError;
+
+            try { await SendGoAwayAsync(code, farewell.Token); }
             catch { /* best effort */ }
         }
         finally
@@ -152,7 +183,7 @@ public class Http2Connection : IAsyncDisposable
                 while (_writeChannel.Reader.TryRead(out var item))
                 {
                     await _stream.WriteAsync(item.AsMemory(), cancellationToken);
-                    item.Return();
+                    Release(item);
                 }
                 // One flush per batch keeps TLS records coalesced.
                 await _stream.FlushAsync(cancellationToken);
@@ -167,8 +198,15 @@ public class Http2Connection : IAsyncDisposable
         {
             // Return any buffers left in the channel (e.g. after cancellation).
             while (_writeChannel.Reader.TryRead(out var item))
-                item.Return();
+                Release(item);
         }
+    }
+
+    /// <summary>Give a written buffer back to the connection's pool.</summary>
+    private void Release(in PooledBuffer item)
+    {
+        if (item.IsPooled)
+            _bufferPool.Return(item.Data);
     }
     
     /// <summary>
@@ -233,13 +271,8 @@ public class Http2Connection : IAsyncDisposable
             if (responseBody.Length > pushedStream.WindowSize)
                 throw new InvalidOperationException($"Pushed data ({responseBody.Length} bytes) exceeds stream flow control window ({pushedStream.WindowSize} bytes)");
             
-            lock (_windowLock)
-            {
-                if (responseBody.Length > _connectionWindowSize)
-                    throw new InvalidOperationException($"Pushed data ({responseBody.Length} bytes) exceeds connection flow control window ({_connectionWindowSize} bytes)");
-                
-                _connectionWindowSize -= responseBody.Length;
-            }
+            if (!TryReserveConnectionWindow(responseBody.Length))
+                throw new InvalidOperationException($"Pushed data ({responseBody.Length} bytes) exceeds connection flow control window ({ConnectionWindowSize} bytes)");
             
             // Update stream flow control window
             pushedStream.UpdateWindowSize(-responseBody.Length);
@@ -748,12 +781,24 @@ public class Http2Connection : IAsyncDisposable
     {
         try
         {
-            // Convert HTTP/2 headers to HTTP/1.1 request
-            var headers = stream.Headers.Select(kvp => (kvp.Key, kvp.Value)).ToList();
-            
-            // Reset buffer position to read from beginning
-            stream.DataBuffer.Position = 0;
-            var bodyBytes = stream.DataBuffer.ToArray();
+            // Pre-sized and built by hand rather than through LINQ: this runs
+            // once per stream, and a server can hold a great many at once.
+            var headers = new List<(string, string)>(stream.Headers.Count);
+            foreach (var kvp in stream.Headers)
+                headers.Add((kvp.Key, kvp.Value));
+
+            // Most requests carry no body, and touching DataBuffer would create
+            // one for every stream that never had a DATA frame.
+            byte[] bodyBytes;
+            if (stream.HasBody)
+            {
+                stream.DataBuffer.Position = 0;
+                bodyBytes = stream.DataBuffer.ToArray();
+            }
+            else
+            {
+                bodyBytes = [];
+            }
             
             var request = Http2RequestConverter.ConvertToHttp1Request(headers, bodyBytes, _remoteIpAddress);
             request.RemoteIpAddressText = _remoteIpText;
@@ -803,9 +848,15 @@ public class Http2Connection : IAsyncDisposable
         }
         finally
         {
-            // Always clean up the stream
+            // Always clean up the stream. The priority tree has to be told as well: a closed
+            // stream's node is dead weight that is never read again, and a long-lived
+            // connection opens a new stream per request, so leaving them behind grows the
+            // tree for as long as the connection lasts. RFC 9113 §5.3.4 expects a closed
+            // stream to leave the dependency tree, with its children reparented onto its
+            // parent, which is what RemoveStream does.
             stream.UpdateState(Http2StreamState.Closed);
             _streams.TryRemove(stream.StreamId, out _);
+            _priorityScheduler.RemoveStream(stream.StreamId);
         }
     }
     
@@ -814,54 +865,110 @@ public class Http2Connection : IAsyncDisposable
     /// awaiting a WINDOW_UPDATE on stream 0 when the window is exhausted. Returns the bytes
     /// reserved (always &gt;= 1 on success).
     /// </summary>
-    private async Task<int> AcquireConnectionWindowAsync(int desired, CancellationToken cancellationToken)
+    internal async Task<int> AcquireConnectionWindowAsync(int desired, CancellationToken cancellationToken)
     {
         while (true)
         {
+            int grant = TakeUpToAvailable(desired);
+            if (grant > 0)
+                return grant;
+
             TaskCompletionSource<bool> waiter;
             lock (_windowLock)
             {
-                if (_connectionWindowSize > 0)
-                {
-                    int grant = Math.Min(desired, _connectionWindowSize);
-                    _connectionWindowSize -= grant;
+                // Re-checked inside the lock, and this is what closes the lost-wakeup race: a
+                // release landing between the attempt above and here does not have to find a
+                // waiter to register, because this second attempt sees the credit it added.
+                // The opposite order is covered too, since a release reads the waiter field
+                // after its interlocked add, and this write happens before the lock is left.
+                grant = TakeUpToAvailable(desired);
+                if (grant > 0)
                     return grant;
-                }
+
                 waiter = _connectionWindowWaiter ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
             await waiter.Task.WaitAsync(cancellationToken);
         }
     }
 
-    private bool TryReserveConnectionWindow(int n)
+    /// <summary>
+    /// Take as much of <paramref name="desired"/> as the window holds, or nothing.
+    /// </summary>
+    /// <remarks>
+    /// A partial grant is right here rather than a refusal: RFC 9113 §6.9.1 has the sender
+    /// split its DATA to fit the window, so taking what is there and returning for the rest is
+    /// the intended behaviour.
+    /// </remarks>
+    private int TakeUpToAvailable(int desired)
     {
-        lock (_windowLock)
+        while (true)
         {
-            if (_connectionWindowSize < n)
-                return false;
-            _connectionWindowSize -= n;
-            return true;
+            int current = Volatile.Read(ref _connectionWindowSize);
+            if (current <= 0)
+                return 0;
+
+            int grant = Math.Min(desired, current);
+            if (Interlocked.CompareExchange(ref _connectionWindowSize, current - grant, current) == current)
+                return grant;
         }
     }
 
-    private void ReleaseConnectionWindow(int amount)
+    /// <summary>The connection-level send window, for tests and diagnostics.</summary>
+    internal int ConnectionWindowSize => Volatile.Read(ref _connectionWindowSize);
+
+    internal bool TryReserveConnectionWindow(int n)
+    {
+        // Compare-and-swap rather than a lock. The window is a single int, so a Monitor buys
+        // no atomicity an interlocked exchange does not, and it costs something a capture made
+        // plain: every response on a connection passes through here, so under load the losers
+        // park, the thread pool answers by injecting more threads, and those contend harder.
+        // At 1024 connections 186 of 356 threads were parked on this one lock while the server
+        // served nothing. A CAS loop never parks; a thread that loses the race re-reads.
+        while (true)
+        {
+            int current = Volatile.Read(ref _connectionWindowSize);
+            if (current < n)
+                return false;
+
+            if (Interlocked.CompareExchange(ref _connectionWindowSize, current - n, current) == current)
+                return true;
+        }
+    }
+
+    internal void ReleaseConnectionWindow(int amount)
     {
         if (amount <= 0) return;
+
+        if (Interlocked.Add(ref _connectionWindowSize, amount) > 0)
+            SignalConnectionWindowWaiter();
+    }
+
+    /// <summary>Wake a sender parked on the connection window, if there is one.</summary>
+    /// <remarks>
+    /// The peek is deliberately outside the lock, because in the ordinary case nobody is
+    /// waiting and taking a lock to discover that would put the contention straight back. It
+    /// is safe because the add above is a full fence: either this read sees a waiter
+    /// registered before it, or that waiter's own re-check under the lock sees the credit the
+    /// add contributed.
+    /// </remarks>
+    private void SignalConnectionWindowWaiter()
+    {
+        if (Volatile.Read(ref _connectionWindowWaiter) is null)
+            return;
+
+        TaskCompletionSource<bool>? waiter;
         lock (_windowLock)
         {
-            _connectionWindowSize += amount;
-            if (_connectionWindowSize > 0)
-            {
-                var w = _connectionWindowWaiter;
-                _connectionWindowWaiter = null;
-                w?.TrySetResult(true);
-            }
+            waiter = _connectionWindowWaiter;
+            _connectionWindowWaiter = null;
         }
+
+        waiter?.TrySetResult(true);
     }
 
     /// <summary>Atomically reserve <paramref name="n"/> bytes from both stream and connection
     /// windows, or nothing if either is short. Used by the single-frame fast path.</summary>
-    private bool TryReserveBothWindows(Http2Stream stream, int n)
+    internal bool TryReserveBothWindows(Http2Stream stream, int n)
     {
         if (!stream.TryReserveWindow(n))
             return false;
@@ -881,6 +988,12 @@ public class Http2Connection : IAsyncDisposable
 
         // The HTTP/2 framing path delivers the body from a byte[]. A stream-backed body
         // (e.g. a static file) is read into memory here, bounded by BodyStreamLength.
+        //
+        // Framing straight out of the stream instead was tried and reverted: reading a frame's
+        // worth at a time turns one large read into one per frame, and at 256 connections that
+        // measured 86,795 req/s against 93,115 for this, consistently across three runs. The
+        // allocation it avoided is mostly cheap -- the median static file is well under the
+        // large object heap threshold -- while the extra reads are not.
         await response.MaterializeBodyStreamAsync(cancellationToken);
 
         var headers = Http2ResponseConverter.ConvertToHttp2Headers(response);
@@ -891,7 +1004,7 @@ public class Http2Connection : IAsyncDisposable
         {
             // HEADERS with END_HEADERS + END_STREAM (no body)
             var totalLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
-            var buffer = ArrayPool<byte>.Shared.Rent(totalLen);
+            var buffer = _bufferPool.Rent(totalLen);
             new Http2Frame
             {
                 Length = encodedHeaders.Length,
@@ -917,7 +1030,7 @@ public class Http2Connection : IAsyncDisposable
             {
                 var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
                 var totalLen = headersFrameLen + Http2Constants.FrameHeaderLength + bodyLen;
-                var combined = ArrayPool<byte>.Shared.Rent(totalLen);
+                var combined = _bufferPool.Rent(totalLen);
 
                 new Http2Frame
                 {
@@ -947,7 +1060,7 @@ public class Http2Connection : IAsyncDisposable
                 // Each chunk waits for window when the peer hasn't granted enough, which is
                 // what bounds in-flight memory instead of queueing the whole body at once.
                 var headersFrameLen = Http2Constants.FrameHeaderLength + encodedHeaders.Length;
-                var hdrBuf = ArrayPool<byte>.Shared.Rent(headersFrameLen);
+                var hdrBuf = _bufferPool.Rent(headersFrameLen);
                 new Http2Frame
                 {
                     Length = encodedHeaders.Length,
@@ -972,7 +1085,7 @@ public class Http2Connection : IAsyncDisposable
 
                     bool isLast = offset + grant >= bodyLen;
                     var dataFrameLen = Http2Constants.FrameHeaderLength + grant;
-                    var dataBuf = ArrayPool<byte>.Shared.Rent(dataFrameLen);
+                    var dataBuf = _bufferPool.Rent(dataFrameLen);
                     new Http2Frame
                     {
                         Length = grant,
@@ -997,16 +1110,7 @@ public class Http2Connection : IAsyncDisposable
         if (frame.StreamId == 0)
         {
             // Connection-level window update: grant more send quota and wake any waiter.
-            lock (_windowLock)
-            {
-                _connectionWindowSize += increment;
-                if (_connectionWindowSize > 0)
-                {
-                    var w = _connectionWindowWaiter;
-                    _connectionWindowWaiter = null;
-                    w?.TrySetResult(true);
-                }
-            }
+            ReleaseConnectionWindow(increment);
         }
         else if (_streams.TryGetValue(frame.StreamId, out var stream))
         {
@@ -1044,7 +1148,11 @@ public class Http2Connection : IAsyncDisposable
             // Unblock a response task parked on this stream's send window.
             stream.Abort();
         }
-        
+
+        // Unconditionally, because a stream can be registered in the priority tree and reset
+        // before it ever reaches _streams.
+        _priorityScheduler.RemoveStream(streamId);
+
         return Task.CompletedTask;
     }
     
@@ -1218,7 +1326,7 @@ public class Http2Connection : IAsyncDisposable
     private async Task SendFrameAsync(Http2Frame frame, CancellationToken cancellationToken)
     {
         var totalLen = Http2Constants.FrameHeaderLength + frame.Length;
-        var buffer = ArrayPool<byte>.Shared.Rent(totalLen);
+        var buffer = _bufferPool.Rent(totalLen);
         frame.WriteHeader(buffer);
         if (frame.Length > 0)
             frame.Payload.Span.CopyTo(buffer.AsSpan(Http2Constants.FrameHeaderLength));

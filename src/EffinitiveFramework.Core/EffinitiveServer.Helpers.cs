@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json;
 using EffinitiveFramework.Core.Http;
@@ -95,9 +96,27 @@ public sealed partial class EffinitiveServer
     /// </summary>
     internal static string ComputeBodyETag(byte[]? body)
     {
-        var hash = SHA256.HashData(body ?? Array.Empty<byte>());
-        return $"\"{Convert.ToHexString(hash, 0, 8).ToLowerInvariant()}\"";
+        Span<byte> hash = stackalloc byte[32];
+        SHA256.HashData(body ?? Array.Empty<byte>(), hash);
+        return FormatETag(BinaryPrimitives.ReadUInt64BigEndian(hash));
     }
+
+    /// <summary>
+    /// Renders the first eight digest bytes as a quoted lowercase hex tag, in one allocation.
+    /// </summary>
+    /// <remarks>
+    /// The tag is an opaque string the client only ever compares for equality (RFC 9110 §8.8.3),
+    /// so the whole of it is built in place rather than by way of a digest array, an uppercase
+    /// hex string and a lowercased copy of that.
+    /// </remarks>
+    private static string FormatETag(ulong value) => string.Create(18, value, static (destination, v) =>
+    {
+        ReadOnlySpan<char> hex = "0123456789abcdef";
+        destination[0] = '"';
+        for (int i = 0; i < 16; i++)
+            destination[1 + i] = hex[(int)((v >> (60 - (i * 4))) & 0xF)];
+        destination[17] = '"';
+    });
 
     private void SerializeResponse(HttpResponse response, object? responseObj, string contentType)
     {
@@ -124,16 +143,18 @@ public sealed partial class EffinitiveServer
                 // Pre-serialized bytes — use directly with the endpoint's content type.
                 response.Body = bytes;
             }
+            else if (responseObj is string str && !IsJsonMediaType(contentType))
+            {
+                // The endpoint named a representation that is not JSON and handed back the
+                // text of it, so the text is the body. Running it through the serializer
+                // instead would escape it into a JSON string literal and label the result
+                // with the endpoint's content type, which is a body that does not match its
+                // own Content-Type header (RFC 9110 §8.3).
+                response.Body = GetTinyTextBodyOrEncode(str);
+            }
             else if (contentType == "text/plain")
             {
-                if (responseObj is string str)
-                {
-                    response.Body = GetTinyTextBodyOrEncode(str);
-                }
-                else
-                {
-                    response.Body = System.Text.Encoding.UTF8.GetBytes(responseObj.ToString() ?? "");
-                }
+                response.Body = System.Text.Encoding.UTF8.GetBytes(responseObj.ToString() ?? "");
             }
             else
             {
@@ -149,6 +170,28 @@ public sealed partial class EffinitiveServer
             response.Body = Array.Empty<byte>();
             response.ContentType = "text/plain";
         }
+    }
+
+    /// <summary>
+    /// Whether a media type asks for JSON, either as application/json or through the +json
+    /// structured syntax suffix (RFC 6839 §3.1).
+    /// </summary>
+    /// <remarks>
+    /// Parameters are ignored and the comparison is case-insensitive, because RFC 9110 §8.3.1
+    /// makes type and subtype case-insensitive and allows parameters such as charset to follow.
+    /// A plain ordinal equality test against "application/json" would therefore miss
+    /// "application/json; charset=utf-8" and every +json type.
+    /// </remarks>
+    private static bool IsJsonMediaType(string contentType)
+    {
+        var type = contentType.AsSpan();
+        int semicolon = type.IndexOf(';');
+        if (semicolon >= 0)
+            type = type[..semicolon];
+        type = type.Trim();
+
+        return type.Equals(MediaTypes.ApplicationJson, StringComparison.OrdinalIgnoreCase)
+            || type.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
     }
 
     private static byte[] GetTinyTextBodyOrEncode(string value)
@@ -281,6 +324,25 @@ public sealed partial class EffinitiveServer
     }
 
     /// <summary>
+    /// Hands the transport to a WebSocket, taking the connection's own pipes where there are any.
+    /// Returns null when the connection has no usable transport.
+    /// </summary>
+    /// <remarks>
+    /// Wrapping those pipes in a Stream and then building a second pipe over that costs a copy
+    /// each way and an extra flush per message, which on an echo workload is most of what a
+    /// message costs. A TLS connection has no pipes to take, because it reads and writes through
+    /// its SslStream.
+    /// </remarks>
+    private static WebSocketConnection? CreateWebSocketConnection(HttpConnection connection)
+    {
+        if (connection.TransportPipes is { } pipes)
+            return new WebSocketConnection(pipes.Reader, pipes.Writer);
+
+        var stream = connection.GetOrCreateStream();
+        return stream == null ? null : new WebSocketConnection(stream);
+    }
+
+    /// <summary>
     /// Perform WebSocket upgrade handshake and hand off to the WebSocket handler.
     /// </summary>
     private async Task HandleWebSocketUpgradeAsync(
@@ -309,20 +371,18 @@ public sealed partial class EffinitiveServer
         // Send the upgrade response
         await connection.WriteResponseAsync(response, cancellationToken, flush: true);
 
-        // The underlying stream is now a WebSocket connection
-        var stream = connection.GetOrCreateStream();
-        if (stream == null)
+        // The connection now belongs to the WebSocket.
+        await using var webSocket = CreateWebSocketConnection(connection);
+        if (webSocket == null)
         {
             if (!_isProduction)
-                Console.WriteLine("WebSocket upgrade failed: no underlying stream available");
+                Console.WriteLine("WebSocket upgrade failed: no underlying transport available");
             return;
         }
 
-        await using var wsConnection = new WebSocketConnection(stream);
-
         try
         {
-            await handler(wsConnection, cancellationToken);
+            await handler(webSocket, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -345,6 +405,12 @@ public sealed partial class EffinitiveServer
             {
                 DefaultStreamErrorCode = 0x0102, // H3_INTERNAL_ERROR
                 DefaultCloseErrorCode = 0x0100,  // H3_NO_ERROR
+
+                // Stated rather than left to the default, because this is the only place the limit
+                // costs nothing to enforce: the transport simply stops delivering streams past it.
+                // The same number the HTTP/2 path advertises, so one peer is promised the same
+                // concurrency whichever protocol it arrives on.
+                MaxInboundBidirectionalStreams = (int)Http2.Http2Constants.DefaultMaxConcurrentStreams,
                 ServerAuthenticationOptions = new SslServerAuthenticationOptions
                 {
                     ServerCertificate = _options.TlsOptions.Certificate,

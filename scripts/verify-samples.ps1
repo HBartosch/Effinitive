@@ -1,6 +1,10 @@
 #!/usr/bin/env pwsh
 # Comprehensive verification test
 
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 Write-Host "`n=== EffinitiveFramework Sample Verification ===" -ForegroundColor Cyan
 
 $passed = 0
@@ -32,7 +36,7 @@ function Test-EP {
 
 # Main Sample
 Write-Host "`n1. Main Sample" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$PWD\samples\EffinitiveFramework.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$RepoRoot\samples\EffinitiveFramework.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
 Start-Sleep 6
 
 Test-EP "GET /" "GET" "http://localhost:5000/"
@@ -50,7 +54,7 @@ Start-Sleep 3
 
 # Validation Sample
 Write-Host "`n2. Validation Sample" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$PWD\samples\EffinitiveFramework.Validation.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$RepoRoot\samples\EffinitiveFramework.Validation.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
 Start-Sleep 6
 
 $validUser = @{name='John';email='john@test.com';age=25;role='User';password='password123';confirmPassword='password123'} | ConvertTo-Json
@@ -64,7 +68,7 @@ Start-Sleep 3
 
 # Auth Sample
 Write-Host "`n3. Auth Sample" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$PWD\samples\EffinitiveFramework.Auth.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$RepoRoot\samples\EffinitiveFramework.Auth.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
 Start-Sleep 6
 
 Test-EP "GET /public" "GET" "http://localhost:5000/public"
@@ -116,7 +120,7 @@ Start-Sleep 3
 
 # EFCore Sample
 Write-Host "`n4. EFCore Sample" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$PWD\samples\EffinitiveFramework.EFCore.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-WindowStyle","Minimized","-Command","cd '$RepoRoot\samples\EffinitiveFramework.EFCore.Sample'; dotnet run -c Release --no-build 2>&1 | Out-Null"
 Start-Sleep 7
 
 Test-EP "GET /api/products" "GET" "http://localhost:5000/api/products"

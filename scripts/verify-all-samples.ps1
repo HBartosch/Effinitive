@@ -1,6 +1,10 @@
 #!/usr/bin/env pwsh
 # Comprehensive verification of all sample endpoints
 
+# Resolve the repository root from this script's own location, so the script
+# works regardless of the caller's working directory.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
 Write-Host "`n╔════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║  EffinitiveFramework - Comprehensive Sample Test     ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
@@ -59,7 +63,7 @@ function Test-Endpoint {
 # Test 1: Main Sample (NoRequestEndpointBase + EndpointBase)
 # ============================================================================
 Write-Host "1. Main Sample - Mixed Endpoint Types" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$PWD\samples\EffinitiveFramework.Sample'; dotnet run --configuration Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$RepoRoot\samples\EffinitiveFramework.Sample'; dotnet run --configuration Release --no-build 2>&1 | Out-Null"
 Start-Sleep -Seconds 6
 
 Test-Endpoint "GET / (NoRequestEndpointBase)" "GET" "http://localhost:5000/"
@@ -81,7 +85,7 @@ Start-Sleep -Seconds 3
 # Test 2: Validation Sample (AsyncEndpointBase with validation)
 # ============================================================================
 Write-Host "`n2. Validation Sample - AsyncEndpointBase with Validation" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$PWD\samples\EffinitiveFramework.Validation.Sample'; dotnet run --configuration Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$RepoRoot\samples\EffinitiveFramework.Validation.Sample'; dotnet run --configuration Release --no-build 2>&1 | Out-Null"
 Start-Sleep -Seconds 6
 
 $validUser = @{
@@ -119,7 +123,7 @@ Start-Sleep -Seconds 3
 # Test 3: Auth Sample (AsyncEndpointBase with JWT auth)
 # ============================================================================
 Write-Host "`n3. Auth Sample - AsyncEndpointBase with Authentication" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$PWD\samples\EffinitiveFramework.Auth.Sample'; dotnet run --configuration Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$RepoRoot\samples\EffinitiveFramework.Auth.Sample'; dotnet run --configuration Release --no-build 2>&1 | Out-Null"
 Start-Sleep -Seconds 6
 
 Test-Endpoint "GET /public (no auth required)" "GET" "http://localhost:5000/public"
@@ -191,7 +195,7 @@ Start-Sleep -Seconds 3
 # Test 4: EFCore Sample (AsyncEndpointBase with database)
 # ============================================================================
 Write-Host "`n4. EFCore Sample - AsyncEndpointBase with Entity Framework" -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$PWD\samples\EffinitiveFramework.EFCore.Sample'; dotnet run --configuration Release --no-build 2>&1 | Out-Null"
+Start-Process powershell -ArgumentList "-NoExit", "-WindowStyle", "Minimized", "-Command", "cd '$RepoRoot\samples\EffinitiveFramework.EFCore.Sample'; dotnet run --configuration Release --no-build 2>&1 | Out-Null"
 Start-Sleep -Seconds 7
 
 Test-Endpoint "GET /api/products (list all)" "GET" "http://localhost:5000/api/products"
