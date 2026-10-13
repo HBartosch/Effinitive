@@ -15,9 +15,8 @@ namespace EffinitiveFramework.Core.Http2;
 /// the connection's single writer, because only the writer knows when the bytes have reached
 /// the socket. The writer fills its one thread-local slot with the first array it hands back
 /// and then takes a per-core lock for every array after it, for as long as the connection
-/// lasts. Multiply that by the number of live connections and the locks are the bottleneck:
-/// a capture at 1024 connections found 142 of 237 blocked threads inside
-/// <c>SharedArrayPool.Return</c> called from the writer.
+/// lasts. Multiplied by the number of live connections, those locks become the limit on how
+/// fast responses can be written.
 /// </para>
 /// <para>
 /// Keeping the buffers on the connection does not remove the hand-off between threads, but it
@@ -35,13 +34,11 @@ namespace EffinitiveFramework.Core.Http2;
 /// </remarks>
 internal sealed class ConnectionBufferPool
 {
-    // 64 bytes is below the smallest frame worth pooling. The ceiling is 32 KiB rather than
-    // the 16 KiB of SETTINGS_MAX_FRAME_SIZE's default (RFC 9113 §6.5.2), because the buffers
-    // the write path actually asks for are a frame *and its header*: a full DATA frame needs
-    // FrameHeaderLength + 16384 = 16393 bytes, and the combined HEADERS-plus-DATA buffer is
-    // larger still. A 16 KiB ceiling missed every one of them by a few bytes and sent them to
-    // the shared pool, which is the exact contention this type exists to avoid — and it did so
-    // only for large bodies, so small-response traffic looked fixed while static files did not.
+    // 64 bytes is below the smallest frame worth pooling. The ceiling is 32 KiB rather than the
+    // 16 KiB of SETTINGS_MAX_FRAME_SIZE's default (RFC 9113 §6.5.2), because the write path asks
+    // for a frame *and its header*: a full DATA frame needs FrameHeaderLength + 16384 bytes, and
+    // the combined HEADERS-plus-DATA buffer is larger again. A 16 KiB ceiling would send every
+    // one of those to the shared pool, which is the contention this type exists to avoid.
     private const int MinShift = 6;
     private const int MaxShift = 15;
     private const int MinSize = 1 << MinShift;

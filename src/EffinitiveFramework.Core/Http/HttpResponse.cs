@@ -192,15 +192,14 @@ public sealed class HttpResponse
             var buffer = new byte[length];
             var total = 0;
 
-            // A local file is read synchronously. There is no overlapped file I/O on Unix, so
-            // ReadAsync hands the work to SafeFileHandle.ThreadPoolValueTaskSource, which
-            // "queues asynchronous RandomAccess operations to be completed synchronously on the
-            // thread pool" -- a queue, a thread hop and a completion for what, on a page-cached
-            // file, is a memcpy. A profile under load found that type holding 160 threads.
+            // A local file is read synchronously. Unix has no overlapped file I/O, so an
+            // asynchronous read is emulated by queueing the work to the thread pool, which for a
+            // file already in the page cache wraps a queue, a thread hop and a completion around
+            // a memcpy.
             //
             // Only for FileStream. Any other source could be a socket or a pipe, where a
-            // synchronous read blocks the caller for as long as the peer is quiet, and that is
-            // exactly what must not happen on a request thread.
+            // synchronous read blocks the caller for as long as the peer stays quiet, and that
+            // is exactly what must not happen on a request thread.
             if (stream is FileStream)
             {
                 while (total < length)

@@ -377,12 +377,10 @@ public sealed class Http3Connection : IAsyncDisposable
     /// Encodes the field section and frames the whole response into one rented buffer.
     /// </summary>
     /// <remarks>
-    /// The field section is encoded into stack space rather than a pooled array. Renting one per
-    /// response was measurably slower than the allocation it replaced: a field section is a few
-    /// dozen bytes and dies immediately, which is what gen0 is for, whereas the pool is shared and
-    /// at a few hundred thousand responses a second the traffic through it costs more than the
-    /// garbage did. Measured across five alternating runs it was about 4% down. Non-async so the
-    /// stackalloc is valid, since there is no await boundary here.
+    /// The field section is encoded into stack space rather than a pooled array. It is a few
+    /// dozen bytes and dies immediately, which is what generation 0 is for, whereas a shared pool
+    /// charges for every rent and return. Non-async so the stackalloc is valid, there being no
+    /// await boundary here.
     /// </remarks>
     private static byte[] BuildResponseBuffer(HttpResponse response, byte[]? body, int bodyLength, out int totalSize)
     {

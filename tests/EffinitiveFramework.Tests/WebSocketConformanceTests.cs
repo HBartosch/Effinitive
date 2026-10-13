@@ -9,15 +9,10 @@ namespace EffinitiveFramework.Tests;
 /// The frames RFC 6455 says a server must refuse, and the close code each refusal warrants.
 /// </summary>
 /// <remarks>
-/// These were found by the Autobahn TestSuite, which failed 110 of its 301 cases against this
-/// implementation: every one of them a frame that is malformed rather than merely unusual. A
-/// well-behaved client never sends one, which is why browsers, the arena's WebSocket suite and
-/// the framework's own tests were all content.
-///
-/// Autobahn is the authority here and is worth re-running after any change to the receive path
-/// (see the conformance harness outside the repository). These cover the same ground in-process
-/// so the rules are pinned by something that runs on every build, not only when someone
-/// remembers to start Docker.
+/// A malformed frame is one no conformant client sends, so nothing in ordinary use exercises
+/// these paths. The specification is nonetheless explicit that each must fail the connection,
+/// and names the close code for each: 1002 where the frame cannot be interpreted, 1007 where its
+/// payload is not what the opcode promised.
 /// </remarks>
 public class WebSocketConformanceTests
 {
@@ -99,9 +94,7 @@ public class WebSocketConformanceTests
         Assert.Equal(sendable, IsSendableCloseCode((ushort)code));
     }
 
-    // Mirrors WebSocketConnection.IsSendableCloseCode, which is private to the connection. Kept
-    // here deliberately: if the two drift, Autobahn section 7 catches it, and this says what the
-    // rule was meant to be.
+    // Mirrors WebSocketConnection.IsSendableCloseCode, which is private to the connection.
     private static bool IsSendableCloseCode(ushort code) => code switch
     {
         1000 or 1001 or 1002 or 1003 or 1007 or 1008 or 1009 or 1010 or 1011 => true,
@@ -119,8 +112,8 @@ public class WebSocketConformanceTests
     public void TextPayloadsAreJudgedByWhetherTheyAreActuallyUtf8(byte[] payload, bool valid)
     {
         // RFC 6455 §5.6 requires a text message's payload to be valid UTF-8 and §8.1 requires the
-        // connection to fail when it is not, with 1007 per §7.4.1. Encoding.UTF8.GetString would
-        // substitute U+FFFD and report success, which is how this went unnoticed.
+        // connection to fail when it is not, with 1007 per §7.4.1. Encoding.UTF8.GetString cannot
+        // answer this: it substitutes U+FFFD and reports success.
         Assert.Equal(valid, System.Text.Unicode.Utf8.IsValid(payload));
     }
 

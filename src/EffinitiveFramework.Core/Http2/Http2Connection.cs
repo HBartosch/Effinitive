@@ -918,12 +918,11 @@ public class Http2Connection : IAsyncDisposable
 
     internal bool TryReserveConnectionWindow(int n)
     {
-        // Compare-and-swap rather than a lock. The window is a single int, so a Monitor buys
-        // no atomicity an interlocked exchange does not, and it costs something a capture made
-        // plain: every response on a connection passes through here, so under load the losers
-        // park, the thread pool answers by injecting more threads, and those contend harder.
-        // At 1024 connections 186 of 356 threads were parked on this one lock while the server
-        // served nothing. A CAS loop never parks; a thread that loses the race re-reads.
+        // Compare-and-swap rather than a lock. The window is a single int, so a Monitor buys no
+        // atomicity an interlocked exchange does not, and every response on a connection passes
+        // through here: under load the threads that lose a lock park, the thread pool answers by
+        // injecting more, and those contend harder still. A CAS loop never parks, so a thread
+        // that loses the race simply re-reads.
         while (true)
         {
             int current = Volatile.Read(ref _connectionWindowSize);
@@ -986,14 +985,10 @@ public class Http2Connection : IAsyncDisposable
 
         response.MaterializeDeferredBody();
 
-        // The HTTP/2 framing path delivers the body from a byte[]. A stream-backed body
-        // (e.g. a static file) is read into memory here, bounded by BodyStreamLength.
-        //
-        // Framing straight out of the stream instead was tried and reverted: reading a frame's
-        // worth at a time turns one large read into one per frame, and at 256 connections that
-        // measured 86,795 req/s against 93,115 for this, consistently across three runs. The
-        // allocation it avoided is mostly cheap -- the median static file is well under the
-        // large object heap threshold -- while the extra reads are not.
+        // The framing path delivers the body from a byte[], so a stream-backed body such as a
+        // static file is read into memory here, bounded by BodyStreamLength. Framing directly
+        // from the stream would turn one large read into one per frame, which costs more than
+        // the single allocation it would avoid.
         await response.MaterializeBodyStreamAsync(cancellationToken);
 
         var headers = Http2ResponseConverter.ConvertToHttp2Headers(response);

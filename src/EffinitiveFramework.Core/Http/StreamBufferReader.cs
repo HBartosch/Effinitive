@@ -10,11 +10,10 @@ namespace EffinitiveFramework.Core.Http;
 /// <remarks>
 /// <para>
 /// Plaintext HTTP/1.1 reads through the socket transport: pooled event args, an I/O queue, a
-/// zero-byte receive while idle. TLS cannot use that, because <see cref="System.Net.Security.SslStream"/>
-/// is a stream, so it fell back to <c>PipeReader.Create(stream, …)</c>. That reader is built for
-/// a producer and a consumer on different threads and synchronises every read accordingly; a
-/// profile of the TLS JSON workload put 21.4% of the connection's read path inside
-/// <c>System.Threading.Lock.EnterAndGetCurrentCount</c>, with the machine only a third busy.
+/// zero-byte receive while idle. TLS cannot use any of it, because
+/// <see cref="System.Net.Security.SslStream"/> is a stream, and the reader
+/// <c>PipeReader.Create</c> returns is built for a producer and a consumer on different threads
+/// and takes a lock on every read accordingly.
 /// </para>
 /// <para>
 /// A connection reads its own requests one after another, so there is no second thread to
@@ -108,11 +107,10 @@ internal sealed class StreamBufferReader : PipeReader
 
     public override void AdvanceTo(SequencePosition consumed, SequencePosition examined)
     {
-        // Measured by slicing rather than with GetOffset. On a sequence built over an array
-        // segment, GetOffset returns the index into the array, not the distance from the start
-        // of the sequence -- so once the window had moved off zero it over-reported, this
-        // advanced past the end, and unread octets were dropped. Slicing is defined in terms of
-        // the sequence itself and cannot drift from it.
+        // Slicing rather than GetOffset: on a sequence built over an array segment GetOffset
+        // returns the index into the array, not the distance from the start of the sequence, and
+        // the two diverge as soon as the window moves off zero. Slicing is defined in terms of
+        // the sequence itself.
         long consumedOffset = _lastReturned.Length - _lastReturned.Slice(consumed).Length;
         long examinedOffset = _lastReturned.Length - _lastReturned.Slice(examined).Length;
 
