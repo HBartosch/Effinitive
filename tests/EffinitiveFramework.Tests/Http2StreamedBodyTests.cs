@@ -17,10 +17,8 @@ namespace EffinitiveFramework.Tests;
 /// response ends. A source shorter than its declared length still has to finish the stream
 /// rather than wait for bytes that are not coming.
 ///
-/// These were written while trying to frame straight out of the stream instead of reading it
-/// into an array first. That change was reverted -- it measured 6.8% slower, because a read per
-/// frame costs more than the allocation it saves -- but the properties are properties of the
-/// path, not of that attempt, so they are kept.
+/// These hold however the body reaches the wire, whether it is buffered first or framed straight
+/// out of the stream.
 /// </remarks>
 public class Http2StreamedBodyTests
 {
