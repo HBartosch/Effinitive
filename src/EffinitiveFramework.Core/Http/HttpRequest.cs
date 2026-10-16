@@ -199,16 +199,40 @@ public sealed class HttpRequest
     {
         if (!BodyDeferred || BodyStream == null)
             return Body;
-        using var ms = new MemoryStream(4096);
-        var buf = ArrayPool<byte>.Shared.Rent(65536);
-        try
+
+        // Drain into a pooled buffer and hand back a window onto it rather than a copy. The
+        // buffer is released by Reset, so it stays valid for as long as the caller holds the
+        // request. A declared length is rented outright; a chunked body has none and grows.
+        int initial = ContentLength > 0 && ContentLength <= int.MaxValue ? (int)ContentLength : 8192;
+        var buffer = ArrayPool<byte>.Shared.Rent(initial);
+        int written = 0;
+
+        while (true)
         {
-            int r;
-            while ((r = await BodyStream.ReadAsync(buf.AsMemory(), ct)) > 0)
-                ms.Write(buf, 0, r);
+            if (written == buffer.Length)
+            {
+                var larger = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+                Buffer.BlockCopy(buffer, 0, larger, 0, written);
+                ArrayPool<byte>.Shared.Return(buffer);
+                buffer = larger;
+            }
+
+            int read = await BodyStream.ReadAsync(buffer.AsMemory(written), ct).ConfigureAwait(false);
+            if (read == 0)
+                break;
+            written += read;
         }
-        finally { ArrayPool<byte>.Shared.Return(buf); }
-        return ms.ToArray().AsMemory();
+
+        if (RentedBodyBuffer != null)
+            ArrayPool<byte>.Shared.Return(RentedBodyBuffer);
+        RentedBodyBuffer = buffer;
+
+        // The body is buffered now, so a second read returns these same octets rather than
+        // draining a stream that has nothing left and reporting an empty body.
+        Body = buffer.AsMemory(0, written);
+        BodyDeferred = false;
+        BodyStream = null;
+        return Body;
     }
 
     /// <summary>
@@ -261,91 +285,4 @@ public sealed class HttpRequest
         _cookies = null;
         _query = null;
     }
-}
-
-/// <summary>
-/// Lazily-created query parameter collection with typed accessors.
-/// </summary>
-public sealed class QueryCollection : IReadOnlyDictionary<string, string>
-{
-    private readonly Dictionary<string, string> _values;
-
-    public static QueryCollection Empty { get; } = new(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
-
-    private QueryCollection(Dictionary<string, string> values)
-    {
-        _values = values;
-    }
-
-    internal static QueryCollection Parse(string path)
-    {
-        var queryIndex = path.IndexOf('?');
-        if (queryIndex < 0 || queryIndex == path.Length - 1)
-        {
-            return Empty;
-        }
-
-        var query = path.AsSpan(queryIndex + 1);
-        var fragmentIndex = query.IndexOf('#');
-        if (fragmentIndex >= 0)
-        {
-            query = query[..fragmentIndex];
-        }
-
-        if (query.IsEmpty)
-        {
-            return Empty;
-        }
-
-        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        while (!query.IsEmpty)
-        {
-            var separatorIndex = query.IndexOf('&');
-            var pair = separatorIndex >= 0 ? query[..separatorIndex] : query;
-            query = separatorIndex >= 0 ? query[(separatorIndex + 1)..] : ReadOnlySpan<char>.Empty;
-
-            if (pair.IsEmpty)
-            {
-                continue;
-            }
-
-            var equalsIndex = pair.IndexOf('=');
-            var name = equalsIndex >= 0 ? pair[..equalsIndex] : pair;
-            if (name.IsEmpty)
-            {
-                continue;
-            }
-
-            var value = equalsIndex >= 0 ? pair[(equalsIndex + 1)..] : ReadOnlySpan<char>.Empty;
-            values[Uri.UnescapeDataString(name.ToString())] = Uri.UnescapeDataString(value.ToString());
-        }
-
-        return values.Count == 0 ? Empty : new QueryCollection(values);
-    }
-
-    public string? Get(string key)
-        => _values.TryGetValue(key, out var value) ? value : null;
-
-    public int GetInt(string key, int defaultValue = 0)
-        => _values.TryGetValue(key, out var value) && int.TryParse(value, out var parsed) ? parsed : defaultValue;
-
-    public double GetDouble(string key, double defaultValue = 0)
-        => _values.TryGetValue(key, out var value) && double.TryParse(value, out var parsed) ? parsed : defaultValue;
-
-    public IEnumerable<string> Keys => _values.Keys;
-
-    public IEnumerable<string> Values => _values.Values;
-
-    public int Count => _values.Count;
-
-    public string this[string key] => _values[key];
-
-    public bool ContainsKey(string key) => _values.ContainsKey(key);
-
-    public bool TryGetValue(string key, out string value) => _values.TryGetValue(key, out value!);
-
-    public IEnumerator<KeyValuePair<string, string>> GetEnumerator() => _values.GetEnumerator();
-
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _values.GetEnumerator();
 }
