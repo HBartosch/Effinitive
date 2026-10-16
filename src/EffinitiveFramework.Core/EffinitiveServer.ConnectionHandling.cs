@@ -27,7 +27,8 @@ public sealed partial class EffinitiveServer
                 binding.SslOptions,
                 cancellationToken,
                 ioQueue,
-                senderPool);
+                senderPool,
+                _options.InlineRequestProcessing);
 
             // Cleartext HTTP/2 with prior knowledge (RFC 9113 §3.3): the client
             // "can establish a TCP connection and send the connection preface

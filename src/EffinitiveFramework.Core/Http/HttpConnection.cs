@@ -121,7 +121,8 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
         SslServerAuthenticationOptions? sslOptions,
         CancellationToken cancellationToken,
         PipeScheduler? ioScheduler,
-        SocketSenderPool? senderPool)
+        SocketSenderPool? senderPool,
+        bool inlineRequestProcessing = false)
     {
         _socket = socket;
         _isSecure = isSecure;
@@ -174,7 +175,10 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
             // - Scatter/gather sends (no copy for multi-segment PipeWriter output)
             var inputOptions = new PipeOptions(
                 pool: MemoryPool<byte>.Shared,
-                readerScheduler: PipeScheduler.ThreadPool,
+                // Inline keeps parsing and handling on the thread that received the bytes.
+                // The thread pool is the default because a handler that blocks costs a pool
+                // thread there, and one of the few I/O threads here.
+                readerScheduler: inlineRequestProcessing ? PipeScheduler.Inline : PipeScheduler.ThreadPool,
                 writerScheduler: ioScheduler,
                 pauseWriterThreshold: 32 * 1024 * 1024, // 32 MiB: chunked bodies accumulate before the parser can complete
                 resumeWriterThreshold: 16 * 1024 * 1024,
