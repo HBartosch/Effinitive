@@ -11,18 +11,17 @@ namespace EffinitiveFramework.Tests;
 /// Handling a request on the receiving thread, and the default that does not.
 /// </summary>
 /// <remarks>
-/// The option moves parsing and handling onto the thread the bytes arrived on. Those threads are
-/// few and each runs one piece of work at a time, so a handler that blocks one stops every
-/// connection that queue owns. That is why the default leaves handling on the pool, where a
-/// blocked handler costs a pool thread the pool can replace, and why the default is worth a test
-/// of its own: it is a safety property, not a preference.
+/// The option keeps a request on the thread its receive completed on rather than handing it to
+/// the pool a second time. That thread is a pool thread either way, so a handler that blocks
+/// costs the same thing with the option on or off; what changes is how many times the request
+/// crosses a thread before it is read. Both settings must answer a request identically.
 /// </remarks>
 public class InlineRequestProcessingTests
 {
     [Fact]
-    public void HandlingStaysOnThePoolUnlessItIsAskedFor()
+    public void HandlingContinuesOnTheReceivingThreadByDefault()
     {
-        Assert.False(new ServerOptions().InlineRequestProcessing);
+        Assert.True(new ServerOptions().InlineRequestProcessing);
     }
 
     private static int FreePort()

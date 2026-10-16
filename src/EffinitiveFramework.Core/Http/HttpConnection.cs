@@ -122,7 +122,7 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
         CancellationToken cancellationToken,
         PipeScheduler? ioScheduler,
         SocketSenderPool? senderPool,
-        bool inlineRequestProcessing = false)
+        bool inlineRequestProcessing = true)
     {
         _socket = socket;
         _isSecure = isSecure;
@@ -192,9 +192,14 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
                 resumeWriterThreshold: 512 * 1024,
                 useSynchronizationContext: false);
 
+            // When handling runs inline, the thread the receive resumes on is the thread the
+            // handler runs on. The pool is the one that grows when a handler stalls it, so the
+            // receive is taken off the I/O queue for that case and the queue keeps the send,
+            // which runs no user code.
             _transport = new SocketTransportConnection(
                 socket, ioScheduler, senderPool, inputOptions, outputOptions,
-                waitForData: false);
+                waitForData: false,
+                receiveScheduler: inlineRequestProcessing ? PipeScheduler.ThreadPool : ioScheduler);
 
             _reader = _transport.Application.Input;
             _writer = _transport.Application.Output;

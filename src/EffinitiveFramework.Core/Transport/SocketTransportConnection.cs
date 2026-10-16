@@ -42,13 +42,14 @@ internal sealed class SocketTransportConnection : IAsyncDisposable
         SocketSenderPool senderPool,
         PipeOptions inputOptions,
         PipeOptions outputOptions,
-        bool waitForData = true)
+        bool waitForData = true,
+        PipeScheduler? receiveScheduler = null)
     {
         _socket = socket;
         _senderPool = senderPool;
         _waitForData = waitForData;
 
-        _receiver = new SocketReceiver(ioScheduler);
+        _receiver = new SocketReceiver(receiveScheduler ?? ioScheduler);
 
         // Create DuplexPipe: transport writes to Input, reads from Output.
         // Application reads from Input, writes to Output.

@@ -110,26 +110,27 @@ public sealed class ServerOptions
     public int MaxConcurrentConnections { get; set; } = Environment.ProcessorCount * 100;
 
     /// <summary>
-    /// Run request handling on the I/O thread that received the bytes, rather than handing it
-    /// to the thread pool. Off by default.
+    /// Continue parsing and handling a request on the thread that completed its receive,
+    /// instead of handing the work to the thread pool a second time. On by default.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A request normally crosses a thread between arriving and being parsed. Keeping it on the
-    /// receiving thread removes that hand-off and the wait for a pool thread to pick the work up,
-    /// which raises throughput and shortens the tail on a server whose handlers return promptly.
+    /// A request otherwise crosses a thread twice before it is read: once when the receive
+    /// completes, and again when the pipe hands its reader continuation to the pool. The second
+    /// crossing buys nothing, and waiting for a pool thread to collect the work leaves the tail
+    /// long and processors idle while connections pile up.
     /// </para>
     /// <para>
-    /// The receiving threads are few, one per I/O queue, and each runs one piece of work at a
-    /// time. A handler that blocks one, by sleeping, waiting on a lock, or calling a synchronous
-    /// API, therefore stops every connection that queue owns, and enough of them stop the server.
-    /// On the thread pool the same handler costs a pool thread, which the pool replaces.
+    /// The receive completes on a pool thread, so the handler runs on one too. A handler that
+    /// blocks therefore costs a pool thread, which the pool replaces, exactly as it does when
+    /// this is off. The I/O queues keep the send side, which runs no application code.
     /// </para>
     /// <para>
-    /// Enable this only where every handler reaches completion without blocking its thread.
+    /// Turning this off restores the extra hand-off, which batches more continuations per
+    /// dispatch at the cost of a longer path per request.
     /// </para>
     /// </remarks>
-    public bool InlineRequestProcessing { get; set; }
+    public bool InlineRequestProcessing { get; set; } = true;
 
     /// <summary>
     /// Idle connection timeout (default: 120 seconds)
