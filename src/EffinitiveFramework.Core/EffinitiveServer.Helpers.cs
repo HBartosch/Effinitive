@@ -380,9 +380,18 @@ public sealed partial class EffinitiveServer
             return;
         }
 
+        // The handler's token reaches a pipe read and a flush on every message, and a
+        // suspended operation registers a callback on whatever source backs it. Handing out
+        // the server-wide token would make every connection on every core register against a
+        // single registration list, whose lock then serialises the message loop. A linked
+        // source per connection registers against the shared one once, at upgrade, and leaves
+        // each connection registering only against its own.
+        using var connectionCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
         try
         {
-            await handler(webSocket, cancellationToken);
+            await handler(webSocket, connectionCancellation.Token);
         }
         catch (Exception ex)
         {

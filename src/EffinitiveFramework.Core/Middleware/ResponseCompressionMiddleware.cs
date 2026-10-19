@@ -71,14 +71,17 @@ public class ResponseCompressionMiddleware : IMiddleware
         if (response.IsStreaming)
             return false;
 
-        // When the body is deferred (BodyObject), we can't know the serialized byte count
-        // until we materialize it. Materialize now so the minimum-size guard is accurate —
-        // the single-pass serialize+compress path in the writer is only worth the overhead
-        // for bodies that are large enough to compress meaningfully.
-        if (response.BodyObject != null)
-            response.MaterializeDeferredBody();
+        // Everything that can be decided from the request and the headers is decided first.
+        // Only the minimum-size guard needs the body, and a body that is still an object has
+        // to be serialized to be measured. Serializing it here also costs the writer its
+        // single-pass pooled path, so that question is asked last and only when the answer
+        // can still change the outcome.
 
-        if (response.Body == null || response.Body.Length < _minimumSize)
+        // A client that offered no coding takes identity (RFC 9110 §12.5.3).
+        if (!request.Headers.TryGetValue(HeaderNames.AcceptEncoding, out var acceptEncoding))
+            return false;
+
+        if (acceptEncoding.IndexOf(HeaderValues.Gzip, StringComparison.OrdinalIgnoreCase) < 0)
             return false;
 
         // Don't compress if already encoded
@@ -86,14 +89,13 @@ public class ResponseCompressionMiddleware : IMiddleware
         if (headers != null && headers.ContainsKey(HeaderNames.ContentEncoding))
             return false;
 
-        // Check if client accepts gzip
-        if (!request.Headers.TryGetValue(HeaderNames.AcceptEncoding, out var acceptEncoding))
+        if (!IsCompressibleContentType(response.ContentType))
             return false;
 
-        if (acceptEncoding.IndexOf(HeaderValues.Gzip, StringComparison.OrdinalIgnoreCase) < 0)
-            return false;
+        if (response.BodyObject != null)
+            response.MaterializeDeferredBody();
 
-        return IsCompressibleContentType(response.ContentType);
+        return response.Body != null && response.Body.Length >= _minimumSize;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

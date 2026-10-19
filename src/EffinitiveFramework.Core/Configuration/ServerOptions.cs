@@ -110,6 +110,29 @@ public sealed class ServerOptions
     public int MaxConcurrentConnections { get; set; } = Environment.ProcessorCount * 100;
 
     /// <summary>
+    /// Continue parsing and handling a request on the thread that completed its receive,
+    /// instead of handing the work to the thread pool a second time. On by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A request otherwise crosses a thread twice before it is read: once when the receive
+    /// completes, and again when the pipe hands its reader continuation to the pool. The second
+    /// crossing buys nothing, and waiting for a pool thread to collect the work leaves the tail
+    /// long and processors idle while connections pile up.
+    /// </para>
+    /// <para>
+    /// The receive completes on a pool thread, so the handler runs on one too. A handler that
+    /// blocks therefore costs a pool thread, which the pool replaces, exactly as it does when
+    /// this is off. The I/O queues keep the send side, which runs no application code.
+    /// </para>
+    /// <para>
+    /// Turning this off restores the extra hand-off, which batches more continuations per
+    /// dispatch at the cost of a longer path per request.
+    /// </para>
+    /// </remarks>
+    public bool InlineRequestProcessing { get; set; } = true;
+
+    /// <summary>
     /// Idle connection timeout (default: 120 seconds)
     /// </summary>
     public TimeSpan IdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
