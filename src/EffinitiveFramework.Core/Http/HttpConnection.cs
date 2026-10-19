@@ -175,9 +175,9 @@ public sealed class HttpConnection : IDisposable, IAsyncDisposable
             // - Scatter/gather sends (no copy for multi-segment PipeWriter output)
             var inputOptions = new PipeOptions(
                 pool: MemoryPool<byte>.Shared,
-                // Inline keeps parsing and handling on the thread that received the bytes.
-                // The thread pool is the default because a handler that blocks costs a pool
-                // thread there, and one of the few I/O threads here.
+                // Inline continues on the thread the receive completed on, which the
+                // receiveScheduler below keeps a pool thread, so the handler runs on one
+                // either way and only the number of hand-offs differs.
                 readerScheduler: inlineRequestProcessing ? PipeScheduler.Inline : PipeScheduler.ThreadPool,
                 writerScheduler: ioScheduler,
                 pauseWriterThreshold: 32 * 1024 * 1024, // 32 MiB: chunked bodies accumulate before the parser can complete
