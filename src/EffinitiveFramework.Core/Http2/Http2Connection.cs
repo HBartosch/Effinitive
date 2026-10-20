@@ -36,7 +36,7 @@ public class Http2Connection : IAsyncDisposable
     // for every such hand-off. See ConnectionBufferPool.
     private readonly ConnectionBufferPool _bufferPool = new();
 
-    /// <summary>How many streams the dependency tree is holding. For tests.</summary>
+    /// <summary>How many streams the dependency tree is holding.</summary>
     internal int TrackedPriorityStreamCount => _priorityScheduler.TrackedStreamCount;
 
     private HpackDecoder _hpackDecoder;
@@ -913,7 +913,7 @@ public class Http2Connection : IAsyncDisposable
         }
     }
 
-    /// <summary>The connection-level send window, for tests and diagnostics.</summary>
+    /// <summary>The connection-level send window.</summary>
     internal int ConnectionWindowSize => Volatile.Read(ref _connectionWindowSize);
 
     internal bool TryReserveConnectionWindow(int n)

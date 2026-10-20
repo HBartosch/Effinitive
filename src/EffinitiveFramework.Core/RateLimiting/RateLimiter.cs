@@ -95,8 +95,9 @@ public sealed class RateLimiter
         if (request.RemoteIpAddressText != null)
             return request.RemoteIpAddressText;
 
-        // No address at all (in-memory transports, tests): fall back to a single shared bucket rather
-        // than throwing or, worse, letting every such request through unlimited.
+        // No address at all, which is what an in-memory transport reports: fall back to one
+        // shared bucket rather than throwing or, worse, letting every such request through
+        // unlimited.
         return peer?.ToString() ?? "unknown";
     }
 

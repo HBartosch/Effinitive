@@ -12,7 +12,7 @@ public interface IRateLimitStore
     /// </summary>
     /// <param name="partitionKey">Identifies the client, typically its IP address.</param>
     /// <param name="policy">The limit being applied; different policies never share an allowance.</param>
-    /// <param name="nowTicks">Current UTC tick count, passed in so callers and tests control time.</param>
+    /// <param name="nowTicks">Current UTC tick count, supplied by the caller rather than read here, so one instant covers the whole attempt.</param>
     /// <param name="retryAfterSeconds">When denied, whole seconds until a permit frees up.</param>
     /// <param name="remaining">Permits left after the attempt.</param>
     bool TryAcquire(string partitionKey, RateLimitPolicy policy, long nowTicks, out int retryAfterSeconds, out int remaining);

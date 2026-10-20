@@ -36,7 +36,7 @@ public sealed class OpenApiHandler
             _uiBytes = Encoding.UTF8.GetBytes(BuildUiHtml(options, _documentPath));
     }
 
-    /// <summary>The serialized document, exposed for diagnostics and tests.</summary>
+    /// <summary>The serialized document, as it is served.</summary>
     public ReadOnlyMemory<byte> DocumentBytes => _documentBytes;
 
     /// <summary>

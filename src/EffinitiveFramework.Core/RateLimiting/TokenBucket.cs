@@ -41,7 +41,7 @@ internal sealed class TokenBucket
     /// <summary>
     /// Attempts to spend one token.
     /// </summary>
-    /// <param name="nowTicks">Current UTC tick count, passed in so tests can control time.</param>
+    /// <param name="nowTicks">Current UTC tick count, supplied by the caller rather than read here, so one instant covers the whole attempt.</param>
     /// <param name="retryAfterSeconds">When denied, whole seconds until a token is available.</param>
     /// <param name="remaining">Tokens left after the attempt, floored at zero.</param>
     public bool TryAcquire(long nowTicks, out int retryAfterSeconds, out int remaining)

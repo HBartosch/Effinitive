@@ -13,12 +13,10 @@ namespace EffinitiveFramework.Tests;
 /// calling it: every stream was registered on HEADERS and none was ever taken out, so the
 /// tree grew for the whole life of the connection.
 ///
-/// This is the shape of leak that unit tests miss and short benchmarks miss. A stream lasts
-/// one request, so the cost is bounded by how long the connection stays open rather than by
-/// how much is in flight, and HTTP/2 connections are meant to stay open. Three objects per
-/// request survived — the node, its <c>Http2StreamPriority</c> and its children list — about
-/// 177 bytes, which is invisible for a thousand requests and is 14 GiB after a hundred
-/// million of them.
+/// A stream lasts one request while an HTTP/2 connection is meant to stay open, so a tree
+/// that is only ever added to grows with how long the peer stays connected rather than with
+/// how much is in flight. Every request leaves a node, its <c>Http2StreamPriority</c> and its
+/// children list behind, so a connection that answers enough requests holds all of them.
 /// </remarks>
 public class Http2StreamPriorityLifetimeTests
 {

@@ -96,8 +96,8 @@ public sealed class HttpRequest
     public bool IsHttps { get; set; }
 
     /// <summary>
-    /// The peer's IP address, as reported by the transport. Null when the connection has no IP endpoint
-    /// (in-memory transports and unit tests).
+    /// The peer's IP address, as reported by the transport. Null when the connection has no IP
+    /// endpoint, as an in-memory transport does not.
     /// <para>
     /// This is always the address the packets came from, never a value taken from a request header. Code
     /// that needs the originating client behind a reverse proxy must resolve <c>X-Forwarded-For</c>
