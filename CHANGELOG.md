@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-26
+
+### Fixed
+
+- **Every WebSocket connection registered its cancellation callbacks on one shared source.**
+  A handler was given the server-wide shutdown token and passes it to a pipe read and a flush on
+  every message. A pipe operation that suspends registers a callback against the source behind
+  its token, so every connection on every core registered and unregistered against a single
+  registration list, and the lock guarding that list sat on the path each message had to follow.
+
+  The cost therefore grew with the number of cores rather than with the work being done. An
+  operation that completes synchronously never registers, which is why the cost was invisible
+  under pipelining and appeared only when messages arrived one at a time. Each connection now
+  gets a source linked to the server's, so its registrations stay its own while a stop still
+  releases a handler parked on a read.
+
+  Per-message processor time fell from 26.3 to 16.3 microseconds and p99 from 6.56 to 3.31ms, and
+  the per-message cost no longer rises with core count: it had grown 31% between 12 and 20 cores
+  and is now flat.
+
+### Changed
+
+- **A request no longer crosses a thread twice before it is parsed.** The receive completed on an
+  I/O queue, which wrote the bytes into the input pipe, and the pipe then handed its reader
+  continuation to the thread pool. The second crossing bought nothing. The receive now completes
+  on the pool and the reader runs on that same thread, so parsing, the handler and the response
+  flush happen together while the bytes are still in cache.
+
+  At 1024 connections: 660,019 to 719,733 requests per second, 25.50 to 22.87 microseconds of
+  processor time per request, p99 6.08 to 4.13ms. At 4096 connections, where the hand-off hurt
+  most: 463,221 to 732,706 per second, 37.95 to 24.43 microseconds, p99 41.70 to 17.40ms. The old
+  path cost half as much again per request at 4096 as at 1024; the new one barely moves.
+
+  **This changes how a request is scheduled.** The handler runs on a thread pool thread either
+  way, so a handler that blocks costs the same resource as before, and under 64 connections
+  calling a handler that sleeps 50ms the new path retained 76-87% of its throughput where the old
+  hand-off retained 62-71%. Set `ServerOptions.InlineRequestProcessing` to `false` to restore the
+  previous path.
+
+- **Request bodies and query strings no longer allocate a copy.** A deferred body was drained
+  through a `MemoryStream` and returned as `ToArray`, so every chunked request allocated a four
+  kilobyte stream buffer and then a second copy of the body; it is now drained into a pooled
+  buffer and handed back as a window onto it, released with the rest of the request. A query
+  built a dictionary and a string per name and value; it now holds offsets into the path the
+  request already owns, so reading a value as a number reads it out of that text and only a
+  percent escape forces a decode. Allocation per request fell from 3,450 to 1,352 bytes.
+
+  A `+` in a query is left as itself. RFC 3986 §3.4 admits it as an ordinary character, and
+  reading it as a space is a form-encoding convention the query component carries no evidence
+  for. This matches the previous behaviour and is now covered by tests.
+
+- **A response is no longer serialized to decide it will not be compressed.** The compression
+  middleware measured the body to apply its minimum-size guard before asking whether the client
+  had offered any coding at all, which both serialized a body that was never going to be
+  compressed and cost the writer its single-pass pooled path. The cheap questions are now asked
+  first. No outcome changes.
+
+### Notes
+
+Every figure above was measured on a 20 core host, not on the hardware the public benchmark board
+uses, and each is a median over interleaved runs of the two builds. Arena validation passes 112
+checks with none failing; HTTP/3 was skipped for want of a local h2load image, and the scheduling
+change cannot reach that path, which does not build these pipes. The WebSocket suite reports the
+same 301 cases as 2.7.1 with no failures.
+
 ## [2.7.1] - 2026-10-13
 
 ### Fixed

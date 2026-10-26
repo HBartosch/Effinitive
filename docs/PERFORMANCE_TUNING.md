@@ -111,10 +111,39 @@ var app = EffinitiveApp.Create()
         options.HeaderTimeout = TimeSpan.FromSeconds(10);
         options.RequestTimeout = TimeSpan.FromSeconds(10);
         options.IdleTimeout = TimeSpan.FromSeconds(60);
+
+        // On by default. A request continues on the thread its receive completed
+        // on instead of being handed to the pool a second time. Turn it off only
+        // to restore the older scheduling; see below.
+        options.InlineRequestProcessing = true;
     })
     .MapEndpoints()
     .Build();
 ```
+
+### Request scheduling
+
+`InlineRequestProcessing` governs how many times a request changes thread before it is parsed.
+
+With it on, which is the default, the socket receive completes on a thread pool thread and the
+transport's pipe reader runs on that same thread, so parsing, the handler and the response flush
+all happen in one go. With it off, the receive completes on an I/O queue and the pipe hands its
+reader continuation to the pool, which is one more hand-off per request.
+
+The hand-off costs most when many connections each have a single request in flight, because every
+request waits for a pool thread to collect it. On a 20 core host with mixed GET and POST shapes:
+
+| connections | off | on |
+| --- | --- | --- |
+| 1024 | 660,019 req/s, 25.50 us/req, p99 6.08ms | 719,733 req/s, 22.87 us/req, p99 4.13ms |
+| 4096 | 463,221 req/s, 37.95 us/req, p99 41.70ms | 732,706 req/s, 24.43 us/req, p99 17.40ms |
+
+Note the per-request cost with it off: half as much again at 4096 connections as at 1024. With it
+on the cost barely moves between the two.
+
+The handler runs on a thread pool thread under either setting, so a handler that blocks costs a
+pool thread the pool can replace in both cases. Turning it off is worth trying only if a workload
+benefits from the extra batching the I/O queues do, which costs a longer path per request.
 
 ## Next Steps
 

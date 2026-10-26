@@ -19,11 +19,15 @@
     <PackageIcon>PackageIconResized.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v2.7.1: WebSocket conformance. The Autobahn TestSuite failed 110 of its 301 cases against 2.7.0; none fail now.
+    <PackageReleaseNotes>v2.8.0: a request no longer crosses a thread twice before it is parsed, and a WebSocket connection no longer shares the server's cancellation source.
 
-Every failure was a malformed frame accepted and processed as though it were valid, which a well-behaved client never sends and so nothing had noticed. RFC 6455 section 5.2 requires RSV1-3 to be zero unless a negotiated extension defines them, and reserves every opcode outside 0x0-0x2 and 0x8-0xA; both were ignored. Section 5.4 requires a continuation frame to continue something, so an orphan continuation or a data frame arriving mid-fragment is now refused. Section 5.6 requires a text message's payload to be valid UTF-8 and section 8.1 requires the connection to fail with 1007 when it is not; Encoding.UTF8 substitutes U+FFFD and reports success, so invalid input was being echoed back as though it had been understood, which was 75 of the 110 failures. Section 5.5.1 allows a close frame to carry nothing or a two-octet code and an optional reason, and section 7.4.1 reserves the codes; the payload was not read at all and the reply always said 1000 rather than echoing the peer's code.
+Fixed. A WebSocket handler was given the server-wide shutdown token and passes it to a pipe read on every message. A suspended read registers a callback against the source behind its token, so every connection on every core registered against one registration list and its lock landed on the path each message follows. The cost grew with core count rather than with the work. Each connection now gets a source linked to the server's, so a stop still releases a handler parked on a read. Per-message processor time 26.3 to 16.3 microseconds, p99 6.56 to 3.31ms, and the cost no longer rises with core count.
 
-This changes what the server accepts. A peer sending invalid UTF-8, setting a reserved bit, or closing with a reserved status code now has its connection failed where it was previously tolerated.</PackageReleaseNotes>
+Changed. The receive completed on an I/O queue and the pipe then handed its reader continuation to the thread pool; the second crossing bought nothing. The receive now completes on the pool and the reader runs on that same thread. At 4096 connections: 463,221 to 732,706 requests per second, 37.95 to 24.43 microseconds of processor time per request, p99 41.70 to 17.40ms. The handler runs on a pool thread either way, so a handler that blocks costs the same resource as before. Set ServerOptions.InlineRequestProcessing to false to restore the previous path.
+
+Changed. Request bodies and query strings no longer allocate a copy: a deferred body is drained into a pooled buffer rather than a MemoryStream and a ToArray, and a query holds offsets into the path rather than a dictionary of strings. 3,450 to 1,352 bytes allocated per request. A plus in a query is still left as itself, per RFC 3986 section 3.4.
+
+Measured on a 20 core host rather than the public board's hardware. Arena validation passes 112 checks with none failing, and the WebSocket suite reports the same 301 cases as 2.7.1 with no failures.</PackageReleaseNotes>
     <RepositoryType>git</RepositoryType>
     <Copyright>Copyright (c) 2025 Henry Bartosch</Copyright>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>

@@ -429,6 +429,18 @@ dotnet run --project samples/EffinitiveFramework.Sample
 - **Struct Types** - Value types for small, frequently-used data
 - **Unsafe Code** - Low-level optimizations where beneficial
 
+## 🆕 What's New in v2.8.0
+
+| Change | Details |
+|---|---|
+| One hand-off per request, not two | **Behaviour change.** The receive completed on an I/O queue and the pipe then handed its reader continuation to the thread pool. The receive now completes on the pool and the reader runs on that same thread. At 4096 connections: 463,221 → 732,706 req/s, 37.95 → 24.43 us of processor time per request, p99 41.70 → 17.40ms. The handler runs on a pool thread either way, so a handler that blocks costs the same resource as before. `ServerOptions.InlineRequestProcessing = false` restores the previous path. |
+| WebSocket connections no longer share a cancellation source | A handler was given the server-wide shutdown token and passes it to a pipe read on every message. A suspended read registers against the source behind its token, so every connection on every core registered on one list and its lock sat on the path each message follows. Per-message processor time 26.3 → 16.3 us, p99 6.56 → 3.31ms, and the cost no longer rises with core count. |
+| Less work per request | A deferred body is drained into a pooled buffer rather than a `MemoryStream` and a `ToArray`, and a query holds offsets into the path rather than a dictionary of strings. 3,450 → 1,352 bytes allocated per request. |
+| A response is not serialized to decide against compressing it | The compression middleware measured the body before asking whether the client had offered any coding. The cheap questions are asked first now. No outcome changes. |
+
+Figures are medians over interleaved runs on a 20 core host, not on public
+benchmark hardware. See [CHANGELOG.md](CHANGELOG.md).
+
 ## 🆕 What's New in v2.7.0
 
 | Change | Details |
