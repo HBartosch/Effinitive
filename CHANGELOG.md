@@ -827,7 +827,7 @@ Breaking changes TBD based on beta feedback.
 
 ## Links
 
-- **NuGet Package**: https://www.nuget.org/packages/EffinitiveFramework.Core (not yet published)
+- **NuGet Package**: https://www.nuget.org/packages/EffinitiveFramework.Core
 - **GitHub Repository**: https://github.com/yourusername/EffinitiveFramework
 - **Documentation**: https://github.com/yourusername/EffinitiveFramework/tree/main/docs
 - **Benchmarks**: [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md)
