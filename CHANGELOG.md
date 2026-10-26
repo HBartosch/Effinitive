@@ -16,16 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every message. A pipe operation that suspends registers a callback against the source behind
   its token, so every connection on every core registered and unregistered against a single
   registration list, and the lock guarding that list sat on the path each message had to follow.
+  The cost therefore grew with the number of cores rather than with the work being done.
 
-  The cost therefore grew with the number of cores rather than with the work being done. An
-  operation that completes synchronously never registers, which is why the cost was invisible
+  An operation that completes synchronously never registers, which is why this was invisible
   under pipelining and appeared only when messages arrived one at a time. Each connection now
   gets a source linked to the server's, so its registrations stay its own while a stop still
   releases a handler parked on a read.
-
-  Per-message processor time fell from 26.3 to 16.3 microseconds and p99 from 6.56 to 3.31ms, and
-  the per-message cost no longer rises with core count: it had grown 31% between 12 and 20 cores
-  and is now flat.
 
 ### Changed
 
@@ -35,52 +31,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the pool and the reader runs on that same thread, so parsing, the handler and the response
   flush happen together while the bytes are still in cache.
 
-  At 1024 connections: 660,019 to 719,733 requests per second, 25.50 to 22.87 microseconds of
-  processor time per request, p99 6.08 to 4.13ms. At 4096 connections, where the hand-off hurt
-  most: 463,221 to 732,706 per second, 37.95 to 24.43 microseconds, p99 41.70 to 17.40ms. The old
-  path cost half as much again per request at 4096 as at 1024; the new one barely moves.
-
   **This changes how a request is scheduled.** The handler runs on a thread pool thread either
-  way, so a handler that blocks costs the same resource as before, and under 64 connections
-  calling a handler that sleeps 50ms the new path retained 76-87% of its throughput where the old
-  hand-off retained 62-71%. Set `ServerOptions.InlineRequestProcessing` to `false` to restore the
-  previous path.
+  way, so a handler that blocks costs the same resource as before. Set
+  `ServerOptions.InlineRequestProcessing` to `false` to restore the previous path, which hands
+  the reader continuation to the pool separately and batches more continuations per dispatch.
 
 - **Request bodies and query strings no longer allocate a copy.** A deferred body was drained
-  through a `MemoryStream` and returned as `ToArray`, so every chunked request allocated a four
-  kilobyte stream buffer and then a second copy of the body; it is now drained into a pooled
-  buffer and handed back as a window onto it, released with the rest of the request. A query
-  built a dictionary and a string per name and value; it now holds offsets into the path the
-  request already owns, so reading a value as a number reads it out of that text and only a
-  percent escape forces a decode. Allocation per request fell from 3,450 to 1,352 bytes.
+  through a `MemoryStream` and returned as `ToArray`, so every chunked request allocated a stream
+  buffer and then a second copy of the body; it is now drained into a pooled buffer and handed
+  back as a window onto it, released with the rest of the request. Reading a body twice now
+  returns the same octets rather than draining a stream that has nothing left.
+
+  A query built a dictionary and a string per name and value; it now holds offsets into the path
+  the request already owns, so reading a value as a number reads it out of that text and only a
+  percent escape forces a decode.
 
   A `+` in a query is left as itself. RFC 3986 §3.4 admits it as an ordinary character, and
   reading it as a space is a form-encoding convention the query component carries no evidence
-  for. This matches the previous behaviour and is now covered by tests.
+  for. This matches the previous behaviour.
 
 - **A response is no longer serialized to decide it will not be compressed.** The compression
-  middleware measured the body to apply its minimum-size guard before asking whether the client
-  had offered any coding at all, which both serialized a body that was never going to be
-  compressed and cost the writer its single-pass pooled path. The cheap questions are now asked
-  first. No outcome changes.
-
-### Notes
-
-Every figure above was measured on a 20 core host, not on the hardware the public benchmark board
-uses, and each is a median over interleaved runs of the two builds. Arena validation passes 112
-checks with none failing; HTTP/3 was skipped for want of a local h2load image, and the scheduling
-change cannot reach that path, which does not build these pipes. The WebSocket suite reports the
-same 301 cases as 2.7.1 with no failures.
+  middleware materialized a deferred body to apply its minimum-size guard before asking whether
+  the client had offered any coding at all, which both serialized a body that was never going to
+  be compressed and cost the writer its single-pass pooled path. The questions that need no body
+  are now asked first. No outcome changes.
 
 ## [2.7.1] - 2026-10-13
 
 ### Fixed
 
-- **The WebSocket implementation accepted frames RFC 6455 requires a server to refuse.** The
-  Autobahn TestSuite failed 110 of its 301 cases; after this fix none do (294 OK, 4 non-strict,
-  3 informational). Every failure was the same shape: a malformed frame processed as though it
-  were valid. A well-behaved client never sends one, which is why browsers and the framework's
-  own tests were content.
+- **The WebSocket implementation accepted frames RFC 6455 requires a server to refuse.** Every
+  one was the same shape: a malformed frame processed as though it were valid. A well-behaved
+  client never sends one, which is why nothing in ordinary use had noticed.
 
   - **§5.2** RSV1-3 must be zero unless a negotiated extension defines them. The parser discarded
     those bits entirely; a frame setting one is now refused with 1002.
@@ -89,7 +71,7 @@ same 301 cases as 2.7.1 with no failures.
     inside a fragmented one, is refused with 1002 rather than accepted.
   - **§5.6, §8.1** A text message's payload must be valid UTF-8, and the connection must fail with
     1007 when it is not. `Encoding.UTF8` substitutes U+FFFD and reports success, so invalid input
-    was echoed back as though it had been understood. This was 75 of the 110 failures.
+    was echoed back as though it had been understood.
   - **§5.5.1, §7.4.1** A close frame carries nothing, or a two-octet code and an optional reason;
     one octet is neither. Codes 1004, 1005 and 1006 and the unassigned ranges must not appear on
     the wire. The payload was not read at all, and the reply always said 1000 rather than echoing
@@ -101,16 +83,8 @@ same 301 cases as 2.7.1 with no failures.
   requires, but it is a change in what the server accepts rather than purely an internal fix.
 
   UTF-8 is checked once the final frame of a message arrives rather than per frame, because §5.4
-  allows a fragment boundary to fall inside a character. Autobahn 6.4.1-6.4.4 would prefer the
-  connection to fail at the offending octet and report this as non-strict rather than failing; the
-  §8.1 obligation is met either way.
-
-### Notes
-
-The UTF-8 check is new work on every text message and has not been measured against the echo
-workload, which runs at over ten million messages a second. `Utf8.IsValid` is vectorised and the
-payloads are small, so the cost is expected to be slight.
-
+  allows a fragment boundary to fall inside a character. Failing at the exact offending octet
+  mid-stream would be stricter; the §8.1 obligation is met either way.
 
 ## [2.7.0] - 2026-10-12
 
@@ -124,20 +98,16 @@ payloads are small, so the cost is expected to be slight.
   The cause was ordering: the peer address was written onto the request before it was parsed, and
   `HttpRequestParser.TryParseRequest` resets the request at the top of every attempt, because a request
   can arrive across any number of reads and each attempt has to start from a clean slate. The connection's
-  facts are now applied after a successful parse. The existing rate limiting tests did not catch this
-  because they build an `HttpRequest` directly and set the address on it, exercising the limiter but never
-  the wiring that fills it in.
+  facts are now applied after a successful parse.
 
 ### Fixed
 
 - **A closed HTTP/2 stream never left the priority dependency tree.** `StreamPriorityScheduler.RemoveStream`
-  existed and had a unit test, but no production caller: every stream was registered on HEADERS and none was
-  ever taken out. A stream lasts one request and an HTTP/2 connection is meant to stay open, so the cost grew
-  with connection lifetime rather than with concurrency, which is why unit tests and short benchmarks all
-  missed it. Three objects survived per request, about 177 bytes. Under sustained load the resident set
-  climbed from 55 MiB to 14.8 GiB in two minutes and kept going; a heap dump found 3,326,614 live
-  `StreamPriorityNode` against 158 genuinely live streams. After the fix, 180 nodes against 183 live streams.
-  RFC 9113 §5.3.4 already described the behaviour the unused method implemented.
+  existed but had no production caller: every stream was registered on HEADERS and none was ever taken out.
+  A stream lasts one request and an HTTP/2 connection is meant to stay open, so the tree grew with
+  connection lifetime rather than with concurrency, and a long-lived connection held a node for every
+  request it had ever answered. RFC 9113 §5.3.4 already described the behaviour the unused method
+  implemented.
 
 - **A string body was serialised as JSON whenever its content type was not exactly `text/plain`.**
   `SerializeResponse` chose between the text path and the JSON serializer by comparing the content type for
@@ -150,7 +120,6 @@ payloads are small, so the cost is expected to be slight.
   case-insensitive as RFC 9110 §8.3.1 requires, and the `+json` suffix of RFC 6839 §3.1 is honoured, so
   `application/problem+json` still serialises.
 
-
 - **304 and HEAD responses sent content.** A response can hold its content as a byte array, a stream, an
   object still to be serialized, or a stream handler, and both places that suppress content cleared only
   the array. An endpoint returning an object had it serialized and sent anyway. RFC 9110 §15.4.5 forbids
@@ -158,12 +127,13 @@ payloads are small, so the cost is expected to be slight.
   neither response carries a length, so both are terminated by the empty line after their fields, and the
   content that followed was read by the peer as the start of the next response. Every exchange after it on
   that connection was misaligned. `HttpResponse.ClearBody()` now drops all four.
+
 - **HTTP/3 corrupted any header name outside the QPACK static table.** The decoder's literal-name branch
   advanced past the pattern byte, called `DecodeInteger`, which advanced again, then backed up once, so
   decoding began on the length byte and read it as the pattern. RFC 9204 §4.5.6 puts the Huffman flag and
   the name length in that byte, so both were wrong and every field after it in the section was misaligned.
-  A client sending an API key or a correlation id over HTTP/3 had it silently mangled. The codec had no
-  tests; it now has eight.
+  A client sending an API key or a correlation id over HTTP/3 had it silently mangled.
+
 - **`HttpRequest.IsHttps` was always false on HTTP/1.1**, including over TLS. Whether a request arrived
   over TLS is a property of the connection, so HTTP/1.1 has nowhere else to learn it from; HTTP/2 and
   HTTP/3 read it from the `:scheme` pseudo-header instead (RFC 9113 §8.3.1). Same cause as the rate
@@ -177,58 +147,42 @@ payloads are small, so the cost is expected to be slight.
   to be reused by the next request on that connection, or by a different peer once the connection returns
   to the pool. Copy what is needed and pass that, rather than passing the request itself into background
   work. ASP.NET Core carries the same hazard with `HttpContext` and answers it the same way, in writing.
-  Worth 560 bytes of the 944 the handled path allocated.
 - **HTTP/2 advertises less to a single peer.** `SETTINGS_MAX_CONCURRENT_STREAMS` drops from 256 to 100 and
   `SETTINGS_INITIAL_WINDOW_SIZE` from 1 MB to 96 KB, both matching what Kestrel advertises. These are
   undertakings made per connection, so their product is the memory one peer can oblige the server to hold
   and it multiplies by the connection count: 256 streams at a 1 MB window was an undertaking to buffer
-  256 MB for any one peer that asked. It is now under 32 MB, and a test asserts that bound.
+  256 MB for any one peer that asked. It is now under 32 MB.
 - **HTTP/3 states its stream limit** on the listener options at the same 100, rather than leaving it to a
   default and duplicating it with a semaphore that could never block.
 - **Header field names are stored in canonical case.** Field names are case-insensitive (RFC 9110 §5.1),
   so a client sending `HOST` now stores `Host`. No lookup changes, because the request header dictionary
   already compared its keys with `OrdinalIgnoreCase`. Go's `net/textproto` canonicalises the same way.
-- **HTTP/1.1 allocates roughly a third less per request**, 1,452 bytes down to about 1,030 end to end over
-  a socket. The method, the HTTP version and every known field name are now matched against the constants
-  the server already holds rather than decoded into fresh strings; the entity tag is built in one
-  allocation rather than four; and the route table's span-keyed lookups are built once by `Freeze()`
-  rather than per request, which takes 26% off the exact-match lookup every request performs.
+- **HTTP/1.1 does less work per request.** The method, the HTTP version and every known field name are now
+  matched against the constants the server already holds rather than decoded into fresh strings; the entity
+  tag is built in one allocation rather than four; and the route table's span-keyed lookups are built once
+  by `Freeze()` rather than per request.
 - **HTTP/3 reported its version as `HTTP/2.0`.** Both protocols build their requests through the
-  same conversion, and neither carries a version on the wire, so the conversion states one and
+  same conversion, and neither carries a version on the wire, so the conversion stated one and
   stated the same for both. Nothing in the server was misled, since the only reader is the
   HTTP/1.1 validation path, but an application inspecting `HttpRequest.HttpVersion` was.
 - **The HTTP/3 response path no longer builds a list or a string per field.** The field section is
   encoded straight from the response: the status comes from a table the process already holds, the
   content length is written as digits into the destination, and known field names map to their
-  lowercase form rather than being lowercased each time. Allocation per request fell from 4,583
-  bytes to 4,473. Throughput did not change, which is worth stating plainly: three separate
-  allocation reductions on this path moved it none, so HTTP/3 here is not allocation-bound.
+  lowercase form rather than being lowercased each time.
 - **The end-of-stream flag is sent with the response rather than after it.** `CompleteWrites()` is
   a second call into the transport where the `completeWrites` overload sets the FIN on the send
-  already being made; the runtime documents them as equivalent. Ten alternating pairs, with the
-  order flipped halfway, gave 244,051 against 231,345 req/s, positive in seven of ten but with a
-  paired t of 1.24. That is not a result. Kept because one call is less work than two and is what
-  Kestrel does, not because it was shown to be faster.
-- **HTTP/3 throughput is 2.9x what it was, and now ahead of Kestrel.** Measured on a 32-core host
-  with the server pinned to 16 cores and the load generator to the other 16, running the arena's
-  own h2load profile at 64 connections and 64 streams, alternating runs with the listening process
-  verified before each: 158,621 req/s at the start to 455,556. Kestrel's own arena entry on the
-  same host and the same load measures 323,335. Two changes account for nearly all of it.
-
-  Every request had been making three to five separate reads from the stream before it was parsed
-  at all, because a variable-length integer (RFC 9000 §16) needs its first byte before its length
-  is known. Each was a suspension the request waited on, which is why threads sat idle with cores
-  free. Frames now come through a buffer, which was worth 1.8x.
-
-  And every QUIC read and write was handed the server's shutdown token. Awaiting with a token
-  registers a callback on it and unregisters it afterwards, and that token is one object shared by
-  every stream on every connection, so thousands of concurrent streams were taking the same
-  registration lock twice per operation. A call tree built from the trace found it: 11% of all
-  time in `Thread.Sleep`, reached 94% from `CancellationTokenSource`, which is a thread sleeping
-  out a contended lock. Kestrel passes no token to its per-stream operations either, keeping one
-  only for accepting a stream and relying on aborting a stream to end anything outstanding.
-  Removing it was worth a further 1.97x, and shutdown still works the same way: disposing the
-  connection aborts its streams and the pending read throws.
+  already being made; the runtime documents them as equivalent. Kept because one call is less work
+  than two and is what Kestrel does.
+- **HTTP/3 frames come through a buffer.** Every request had been making three to five separate reads from
+  the stream before it was parsed at all, because a variable-length integer (RFC 9000 §16) needs its first
+  byte before its length is known. Each was a suspension the request waited on, which left threads idle
+  with cores free.
+- **HTTP/3 per-stream reads and writes are no longer given the server's shutdown token.** Awaiting with a
+  token registers a callback on it and unregisters it afterwards, and that token is one object shared by
+  every stream on every connection, so concurrent streams all took the same registration lock twice per
+  operation. Kestrel passes no token to its per-stream operations either, keeping one only for accepting a
+  stream and relying on aborting a stream to end anything outstanding. Shutdown still works the same way:
+  disposing the connection aborts its streams and the pending read throws.
 - **A cleartext WebSocket takes the connection's own pipes** rather than wrapping them in a `Stream` and
   building a second pipe over that, which cost a copy each way and an extra flush per message. The frame
   parser also moved out of the receive state machine, since a local live across an `await` becomes a field
@@ -239,48 +193,40 @@ payloads are small, so the cost is expected to be slight.
 
 ### Performance
 
-Figures below are from one 32-core host, interleaved and repeated three times per build, against a
-run-to-run noise floor of about 2.5%. They are ratios between builds measured minutes apart, not absolute
-numbers comparable with any published board.
-
 - **A local file body is read synchronously rather than through the thread pool.** There is no overlapped
   file I/O on Unix, so `Stream.ReadAsync` on a `FileStream` is emulated by queueing the work to the thread
   pool. For a page-cached file that wraps a queue, a thread hop and a completion around a memcpy, and
-  requests are dispatched per stream with no bound, so 256 connections at 32 streams each put 8,192 such
-  reads in flight. Static file serving over HTTP/2 improved **32.8%**, from 105,253 to 139,722 req/s, and the
-  profile flipped from two-thirds blocked to two-thirds computing. HTTP/3 and the WebSocket profiles share
-  the path and improved with it. Restricted to `FileStream`: any other source could be a socket, where a
-  synchronous read would block the request thread for as long as the peer stayed quiet.
+  requests are dispatched per stream with no bound, so a connection with many streams put that many such
+  reads in flight. HTTP/3 and the WebSocket profiles share the path. Restricted to `FileStream`: any other
+  source could be a socket, where a synchronous read would block the request thread for as long as the peer
+  stayed quiet.
 
 - **TLS HTTP/1.1 reads through a lock-free buffered reader.** `SslStream` is a stream, so that path could not
   use the socket transport the plaintext path gets and fell back to `PipeReader.Create`, which is built to
   synchronise a producer and a consumer on separate threads. A connection parses its own requests in
-  sequence, so there is no second thread and nothing for the lock to protect; a caller tree put 21.4% of the
-  read path inside `Lock.EnterAndGetCurrentCount`. The replacement holds octets in one contiguous pooled
-  array, so a read result is a single segment and no segment objects are allocated per read. **+5.5%**, from
-  175,070 to 184,780 req/s.
+  sequence, so there is no second thread and nothing for the lock to protect. The replacement holds octets
+  in one contiguous pooled array, so a read result is a single segment and no segment objects are allocated
+  per read.
 
 - **HTTP/2 send windows are reserved without a lock.** Both windows are a single `int` guarded by a `Monitor`,
-  which serialised every response on a connection against every other. Under load that convoys: a capture at
-  1024 connections found 186 of 356 threads parked on the connection window's lock while the server made no
-  progress at all. A compare-and-swap loop does the same job without parking anyone. On its own this did not
-  move throughput, because the contention relocated to `ArrayPool.Shared`; it is kept because a single `int`
-  does not need a `Monitor` and a process-wide serialisation point scales worse the more cores it meets.
+  which serialised every response on a connection against every other. Under load that convoys, with threads
+  parked on the connection window's lock while the server makes no progress. A compare-and-swap loop does
+  the same job without parking anyone. Kept because a single `int` does not need a `Monitor` and a
+  process-wide serialisation point scales worse the more cores it meets.
 
 - **HTTP/2 write buffers are kept on the connection that owns them.** `ArrayPool<byte>.Shared` assumes rent
   and return happen on one thread; the write path rents on a stream's handler and returns on the connection's
   single writer, so the writer takes a per-core lock for every buffer after its first. Confining the buffers
-  to the connection took threads blocked on a `Monitor` from 292 of 356 to 32 of 281 under the harness's own
-  load, with `SharedArrayPool.Return` disappearing from the stacks entirely.
+  to the connection keeps that contention between one connection's own streams rather than between every
+  connection in the process.
 
 ### Notes
 
-Several plausible changes were measured and rejected rather than shipped, and the reasoning is recorded in
+Several plausible changes were tried and rejected rather than shipped, and the reasoning is recorded in
 the commits so they are not retried blind: framing responses straight out of the file stream instead of
-buffering them (6.8% slower, because a read per frame costs more than the allocation it saves); removing the
-HTTP/2 priority tree entirely despite nothing reading it (6.2% slower, because its lock turns out to pace the
-work); and dropping `FileOptions.Asynchronous` (no change, because the flag does not select the code path on
-Unix).
+buffering them, because a read per frame costs more than the allocation it saves; removing the HTTP/2
+priority tree entirely despite nothing reading it, because its lock turns out to pace the work; and
+dropping `FileOptions.Asynchronous`, because the flag does not select the code path on Unix.
 
 ## [2.6.0] - 2026-09-01
 
@@ -335,9 +281,7 @@ Unix).
   nothing to process: a complete frame trailed by a single byte of the next one caused the reply to the
   first to wait on the remainder of the second. A client that waits for that reply before sending
   anything more never sends the remainder, so the exchange stalled until one side timed out. The
-  batching itself is unchanged when a whole frame really is queued: measured over a held connection,
-  replies per second at batch depths of 1 through 32 are within noise of the previous build, while a
-  frame followed by a partial frame is now answered in under a millisecond instead of never.
+  batching itself is unchanged when a whole frame really is queued.
 - **`close_notify` on connection close** — TLS connections now send a `close_notify` alert before
   closing the socket. RFC 8446 §6.1 requires a party to send one "before closing the write side of the
   connection", and `SslStream.DisposeAsync()` does not, so a client had no way to distinguish a complete
@@ -353,11 +297,6 @@ Unix).
 - `HandleHttp2ConnectionAsync` now takes its stream from `GetOrCreateStream()` rather than the `Stream`
   property. The TLS path is unchanged, but a cleartext connection has no `Stream`: it runs on the
   socket transport's pipes, which `GetOrCreateStream()` wraps.
-- **Regression cover** — `HttpRequestParserFragmentationTests` splits each of the three request body
-  framings at every byte offset and asserts that no prefix throws and that every two-segment split still
-  parses. `ListenerBindingTests` pins that two listeners sharing a certificate keep separate protocol
-  lists, `CertificateReloaderTests` covers the swap and the half-written pair, and `WebSocketFlushTests`
-  covers the partial-frame case alongside the batching it must not cost.
 
 ## [2.5.0] - 2026-07-29
 
@@ -440,8 +379,8 @@ Unix).
 - **HTTP/2 outbound flow control** — the response send path now honors the peer's stream- and
   connection-level send windows (RFC 7540 §6.9) instead of chunking the entire body into the write
   queue at once. Under high connection counts this previously let large responses (e.g. static files)
-  pile unbounded buffers into the writer channel, exhausting `ArrayPool` and collapsing the connection
-  (`static-h2` @ 1024 conns went to 0 RPS with multi-GiB memory). DATA frames now park on
+  pile unbounded buffers into the writer channel, exhausting `ArrayPool` and collapsing the
+  connection. DATA frames now park on
   `WINDOW_UPDATE` when the window is exhausted, so in-flight memory is bounded by the advertised window.
 - **HTTP/2 send-window initialization** — the connection-level send window now starts at the RFC
   default of 65535 (was incorrectly 1 MiB), and the client's `SETTINGS_INITIAL_WINDOW_SIZE` (which
@@ -621,31 +560,21 @@ Unix).
 
 ## [1.2.0] - 2026-01-20
 
-### Performance - Major Stress Test Optimizations 🚀
-**Critical improvements for high-concurrency scenarios (web-frameworks-benchmark)**
+### Changed
+- **Removed Task.Run overhead** - Direct async handling eliminates a task allocation per connection
+- **Atomic counter for connection limiting** - Replaced `SemaphoreSlim` with lock-free `Interlocked` operations
+- **Production mode flag** - Conditional debug logging keeps console I/O off the request path
+- **ThreadPool optimization** - Pre-warms worker threads (`ProcessorCount * 2`) to handle burst traffic
+- **Socket optimizations** - Increased backlog (512 → 8192), disabled Nagle's algorithm, adjusted buffer sizes
 
-#### Changed
-- **Removed Task.Run overhead** - Direct async handling eliminates task allocation per connection (+20% throughput)
-- **Atomic counter for connection limiting** - Replaced `SemaphoreSlim` with lock-free `Interlocked` operations (+15% throughput)
-- **Production mode flag** - Conditional debug logging prevents I/O blocking in production (+35% throughput)
-- **ThreadPool optimization** - Pre-warms worker threads (`ProcessorCount * 2`) to handle burst traffic (+10% throughput)
-- **Socket optimizations** - Increased backlog (512 → 8192), disabled Nagle's algorithm, optimized buffer sizes (+5% throughput)
-
-#### Added
-- **`EnableDebugLogging` option** - Control console output for production performance (default: false)
+### Added
+- **`EnableDebugLogging` option** - Control console output (default: false)
 - **`.Configure()`** fluent API - Direct `ServerOptions` configuration method
-- **Production configuration sample** - `Program.cs` optimized for benchmarking/stress tests
-- **Stress test script** - Pure PowerShell implementation (`test-stress-performance.ps1`) - no external dependencies
+- **Production configuration sample** - `Program.cs` with the settings above applied
 
-#### Performance Impact
-- **Before**: 13,215-15,672 req/s (stress test with 64-512 connections)
-- **After (projected)**: 35,000-42,000 req/s (~2.6x improvement)
-- **Target**: Match/exceed GenHTTP's 39,923 req/s baseline
-
-#### Documentation
-- Added `STRESS_TEST_OPTIMIZATION.md` - Comprehensive root cause analysis and optimization guide
+### Documentation
+- Added `STRESS_TEST_OPTIMIZATION.md` - Root cause analysis and optimization guide
 - Updated `PERFORMANCE_TUNING.md` - Production configuration guidelines
-- Added detailed benchmarking methodology and comparison
 
 ### Fixed
 - Console.WriteLine in hot paths causing I/O contention
@@ -660,27 +589,21 @@ Unix).
   - `EnableDebugLogging` configuration option (default: false) to disable Console.WriteLine overhead
   - `.Configure(Action<ServerOptions>)` fluent API for direct server options configuration
   - `PERFORMANCE_TUNING.md` - Comprehensive performance optimization guide
-  - `STRESS_TEST_OPTIMIZATION.md` - Detailed analysis of 2.5x throughput improvement
+  - `STRESS_TEST_OPTIMIZATION.md` - Analysis of the connection and logging changes
   - `HttpRequest.RouteValues` property for ASP.NET Core-style route parameter access
 
 ### Changed
-- **Eliminated Task.Run overhead** - Direct async handling of connections (~20% improvement)
-- **Replaced Semaphore with atomic counter** - Lock-free connection limiting (~15% improvement)
-- **Optimized socket configuration** - NoDelay, larger backlog (8192), optimized buffers
+- **Eliminated Task.Run overhead** - Direct async handling of connections
+- **Replaced Semaphore with atomic counter** - Lock-free connection limiting
+- **Optimized socket configuration** - NoDelay, larger backlog (8192), adjusted buffers
 - **ThreadPool pre-warming** - SetMinThreads(ProcessorCount * 2) for burst traffic
-- **Conditional debug logging** - All Console.WriteLine calls gated behind EnableDebugLogging flag (~35% improvement)
-- Increased listen backlog from 512 to 8192 for stress tests
+- **Conditional debug logging** - All Console.WriteLine calls gated behind EnableDebugLogging flag
+- Increased listen backlog from 512 to 8192
 - Applied socket optimizations (NoDelay, SendBufferSize, ReceiveBufferSize)
-
-### Performance
-- **Before**: 13-15K req/s under 64-512 concurrent connections (web-frameworks-benchmark)
-- **After (Expected)**: 40K+ req/s, matching GenHTTP performance
-- **Local benchmarks**: Still ~450 ns/req (22% faster than GenHTTP)
-- **Cumulative improvement**: ~2.6x throughput increase under stress
 
 ### Fixed
 - Connection limiting now uses lock-free Interlocked operations instead of semaphore waits
-- Debug logging no longer impacts production performance
+- Debug logging no longer reaches the request path when disabled
 - Thread pool starvation under burst traffic
 
 ## [1.1.0] - 2025-11-28
@@ -713,11 +636,6 @@ Unix).
 - Updated `EndpointSelectionGuide.md` - Added NoRequest endpoint guidance
 - Updated `README.md` - Version 1.1.0 features and examples
 
-### Tests
-- Added 11 SSE-specific tests (event formatting, streaming, keep-alive)
-- Added 6 NoRequest endpoint tests (including ContentType customization)
-- Total test count: 71 tests (all passing)
-
 ### Changed
 - Enhanced endpoint base classes with ContentType property
 - Updated package tags to include SSE and streaming
@@ -738,7 +656,7 @@ Unix).
 ## [1.0.0-rc.1] - TBD (Next Release)
 
 ### Added
-- Ultra-fast HTTP/1.1 server (16x faster than FastEndpoints, 1.25x faster than GenHTTP)
+- HTTP/1.1 server
 - Full HTTP/2 support with binary framing and multiplexing
 - ALPN negotiation for automatic protocol selection
 - HPACK header compression (static table + dynamic table + Huffman encoding)
@@ -755,15 +673,9 @@ Unix).
 - Route parameters (`/users/{id}`)
 - CORS middleware
 - Connection pooling and buffer pooling (zero-allocation design)
-- Comprehensive benchmarks with BenchmarkDotNet
 
 ### Performance
-- **41-48μs** response time (empty GET)
-- **16.2x faster** than FastEndpoints
-- **1.25x faster** than GenHTTP
-- **15.4x faster** than ASP.NET Core Minimal API
 - Zero-allocation hot paths with Span<T>, Memory<T>, and ArrayPool
-- HTTP/2 sub-50μs response times
 
 ### Documentation
 - Complete API documentation in `docs/`
@@ -771,7 +683,6 @@ Unix).
 - Validation integration guide
 - HTTP/2 implementation details
 - Endpoint selection guide
-- Benchmark results and methodology
 
 ### Known Issues
 - ⚠️ Security issues listed above MUST be fixed before production use
