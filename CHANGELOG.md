@@ -821,14 +821,14 @@ Breaking changes TBD based on beta feedback.
 
 ## Contributors
 
-- Your Name (@yourusername) - Creator and maintainer
+- Henry Bartosch (@HBartosch) - Creator and maintainer
 
 ---
 
 ## Links
 
 - **NuGet Package**: https://www.nuget.org/packages/EffinitiveFramework.Core
-- **GitHub Repository**: https://github.com/yourusername/EffinitiveFramework
-- **Documentation**: https://github.com/yourusername/EffinitiveFramework/tree/main/docs
+- **GitHub Repository**: https://github.com/HBartosch/Effinitive
+- **Documentation**: https://github.com/HBartosch/Effinitive/tree/main/docs
 - **Benchmarks**: [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md)
 - **Security**: [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md)
